@@ -1,0 +1,17 @@
+[package]
+name = "npm-pre-scan"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "npm-pre-scan"
+path = "src/main.rs"
+
+[dependencies]
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4" }
+colored = "2"
+anyhow = "1"
