@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 
-static TOP_SCOPED_DATA: &str = include_str!("../layer0/data/top_scoped_packages.txt");
+static TOP_SCOPED_DATA: &str = include_str!("../data/top_scoped_packages.txt");
 
 pub fn load_top_scoped_packages() -> Vec<String> {
     TOP_SCOPED_DATA

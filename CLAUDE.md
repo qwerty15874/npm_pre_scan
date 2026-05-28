@@ -15,7 +15,7 @@ Scoring  [░░░░░░░░░░░░░░░░░░░░] TODO   A
 
 ### Layer 0 — What's built
 ```
-src/                            Rust implementation (replaces Python layer0/)
+src/                            Rust implementation
   checker.rs    run_layer0(name) → CheckResult {verdict, findings}
   registry.rs   npm registry + downloads API (reqwest blocking)
   typosquat.rs  levenshtein() + check_typosquat() vs top_packages.txt (~240 pkgs)
@@ -25,14 +25,11 @@ src/                            Rust implementation (replaces Python layer0/)
   models.rs     Verdict enum, Finding type, CheckResult struct
   main.rs       CLI: npm-pre-scan [--json] [--no-color] <pkg> [<pkg>...]
 
-layer0/data/top_packages.txt        — embedded at compile time; add entries to extend coverage
-layer0/data/top_scoped_packages.txt — embedded at compile time; add entries to extend coverage
+data/top_packages.txt        — embedded at compile time; add entries to extend coverage
+data/top_scoped_packages.txt — embedded at compile time; add entries to extend coverage
 
 Binary: npm-pre-scan [--json] [--no-color] <pkg> [<pkg>...]
         exit 0=PASS  1=SUSPECT  2=BLOCK
-
-Legacy Python (kept for reference):
-  layer0/*.py, run_layer0.py
 
 Severity rules:
   typosquat distance=1  → BLOCK
