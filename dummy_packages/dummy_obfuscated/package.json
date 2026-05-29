@@ -1,0 +1,10 @@
+{
+  "name": "dummy-obfuscated",
+  "version": "1.0.0",
+  "description": "Dummy package for Layer 1 static analysis testing — must pass Layer 0, caught by Layer 1",
+  "main": "index.js",
+  "scripts": {
+    "preinstall": "node -e \"process.stdout.write('')\"",
+    "postinstall": "node setup.js"
+  }
+}
