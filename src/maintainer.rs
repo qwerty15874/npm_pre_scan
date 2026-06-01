@@ -113,3 +113,66 @@ pub fn check_maintainer_change(info: &Value) -> Option<Map<String, Value>> {
     );
     Some(f)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn iso(dt: DateTime<Utc>) -> String {
+        dt.to_rfc3339()
+    }
+
+    #[test]
+    fn new_maintainer_recent_is_suspect() {
+        let now = iso(Utc::now());
+        let old = iso(Utc::now() - chrono::Duration::days(400));
+        let info = json!({
+            "time": { "1.0.0": old, "2.0.0": now },
+            "versions": {
+                "1.0.0": { "maintainers": [{ "name": "alice" }] },
+                "2.0.0": { "maintainers": [{ "name": "alice" }, { "name": "mallory" }] }
+            }
+        });
+        let f = check_maintainer_change(&info).unwrap();
+        assert_eq!(f.get("severity").and_then(|v| v.as_str()), Some("SUSPECT"));
+        assert!(f.get("message").unwrap().as_str().unwrap().contains("mallory"));
+    }
+
+    #[test]
+    fn unchanged_maintainers_is_none() {
+        let now = iso(Utc::now());
+        let old = iso(Utc::now() - chrono::Duration::days(400));
+        let info = json!({
+            "time": { "1.0.0": old, "2.0.0": now },
+            "versions": {
+                "1.0.0": { "maintainers": [{ "name": "alice" }] },
+                "2.0.0": { "maintainers": [{ "name": "alice" }] }
+            }
+        });
+        assert!(check_maintainer_change(&info).is_none());
+    }
+
+    #[test]
+    fn change_outside_window_is_none() {
+        let old1 = iso(Utc::now() - chrono::Duration::days(400));
+        let old2 = iso(Utc::now() - chrono::Duration::days(200));
+        let info = json!({
+            "time": { "1.0.0": old1, "2.0.0": old2 },
+            "versions": {
+                "1.0.0": { "maintainers": [{ "name": "alice" }] },
+                "2.0.0": { "maintainers": [{ "name": "alice" }, { "name": "mallory" }] }
+            }
+        });
+        assert!(check_maintainer_change(&info).is_none());
+    }
+
+    #[test]
+    fn single_version_is_none() {
+        let info = json!({
+            "time": { "1.0.0": iso(Utc::now()) },
+            "versions": { "1.0.0": { "maintainers": [{ "name": "alice" }] } }
+        });
+        assert!(check_maintainer_change(&info).is_none());
+    }
+}

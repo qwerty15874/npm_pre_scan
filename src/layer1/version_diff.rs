@@ -176,3 +176,28 @@ pub fn check_version_diff(info: &Value) -> Vec<Finding> {
 
     findings
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_file_counts_all_as_added() {
+        let latest = "line one\nline two";
+        assert_eq!(added_text(None, latest), latest);
+    }
+
+    #[test]
+    fn only_genuinely_new_lines_returned() {
+        let prev = "shared a\nshared b".to_string();
+        let latest = "shared a\nshared b\neval(payload)";
+        assert_eq!(added_text(Some(&prev), latest), "eval(payload)");
+    }
+
+    #[test]
+    fn no_added_lines_is_empty() {
+        let prev = "x\ny".to_string();
+        let latest = "x\ny";
+        assert_eq!(added_text(Some(&prev), latest), "");
+    }
+}

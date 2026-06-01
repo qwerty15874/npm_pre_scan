@@ -160,4 +160,34 @@ mod tests {
         });
         assert!(check_signatures("pkg", &info).is_none());
     }
+
+    #[test]
+    fn key_expiry() {
+        let past = json!({ "expires": "2000-01-01T00:00:00.000Z" });
+        let future = json!({ "expires": "2999-01-01T00:00:00.000Z" });
+        let null = json!({ "expires": null });
+        let missing = json!({});
+        assert!(key_expired(&past));
+        assert!(!key_expired(&future));
+        assert!(!key_expired(&null));
+        assert!(!key_expired(&missing));
+    }
+
+    #[test]
+    fn latest_version_prefers_dist_tag() {
+        let info = json!({
+            "dist-tags": { "latest": "2.0.0" },
+            "versions": { "1.0.0": {}, "2.0.0": {} }
+        });
+        assert_eq!(latest_version(&info).as_deref(), Some("2.0.0"));
+    }
+
+    #[test]
+    fn latest_version_falls_back_to_time_sort() {
+        let info = json!({
+            "time": { "1.0.0": "2020-01-01T00:00:00Z", "1.5.0": "2022-01-01T00:00:00Z" },
+            "versions": { "1.0.0": {}, "1.5.0": {} }
+        });
+        assert_eq!(latest_version(&info).as_deref(), Some("1.5.0"));
+    }
 }

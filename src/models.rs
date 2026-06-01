@@ -54,3 +54,41 @@ pub fn score_findings(findings: &[Finding]) -> u32 {
         .sum();
     total.min(100)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn finding(severity: &str) -> Finding {
+        let mut m = Map::new();
+        m.insert("severity".into(), Value::String(severity.to_string()));
+        m
+    }
+
+    #[test]
+    fn severity_weights() {
+        assert_eq!(severity_weight("BLOCK"), 50);
+        assert_eq!(severity_weight("SUSPECT"), 15);
+        assert_eq!(severity_weight("INFO"), 2);
+        assert_eq!(severity_weight("unknown"), 0);
+    }
+
+    #[test]
+    fn score_sums_and_caps() {
+        assert_eq!(score_findings(&[]), 0);
+        assert_eq!(score_findings(&[finding("SUSPECT"), finding("INFO")]), 17);
+        // 3 BLOCKs = 150, capped at 100
+        assert_eq!(
+            score_findings(&[finding("BLOCK"), finding("BLOCK"), finding("BLOCK")]),
+            100
+        );
+    }
+
+    #[test]
+    fn verdict_display() {
+        assert_eq!(Verdict::Pass.to_string(), "PASS");
+        assert_eq!(Verdict::Suspect.to_string(), "SUSPECT");
+        assert_eq!(Verdict::Block.to_string(), "BLOCK");
+        assert_eq!(Verdict::Error.to_string(), "ERROR");
+    }
+}

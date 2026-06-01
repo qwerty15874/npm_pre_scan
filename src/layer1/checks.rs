@@ -191,3 +191,96 @@ pub fn check_dynamic_require(dir: &Path) -> Vec<Finding> {
     }
     findings
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn dir_with(files: &[(&str, &str)]) -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        for (name, content) in files {
+            fs::write(tmp.path().join(name), content).unwrap();
+        }
+        tmp
+    }
+
+    fn sevs(findings: &[Finding]) -> Vec<String> {
+        findings
+            .iter()
+            .map(|f| f.get("severity").and_then(|v| v.as_str()).unwrap_or("").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn install_scripts_detected() {
+        let pkg = json!({ "scripts": { "postinstall": "node x.js" } });
+        assert_eq!(sevs(&check_install_scripts(&pkg)), vec!["SUSPECT"]);
+        let clean = json!({ "scripts": { "test": "jest" } });
+        assert!(check_install_scripts(&clean).is_empty());
+        let none = json!({});
+        assert!(check_install_scripts(&none).is_empty());
+    }
+
+    #[test]
+    fn obfuscation_eval_buffer_blocks() {
+        let d = dir_with(&[("a.js", "const x = eval(Buffer.from('aaa','base64'));")]);
+        let f = check_obfuscation(d.path());
+        assert!(sevs(&f).contains(&"BLOCK".to_string()));
+    }
+
+    #[test]
+    fn obfuscation_bare_eval_is_suspect() {
+        let d = dir_with(&[("a.js", "eval(userInput);")]);
+        let f = check_obfuscation(d.path());
+        assert_eq!(sevs(&f), vec!["SUSPECT"]);
+    }
+
+    #[test]
+    fn suspicious_strings_etc_passwd_blocks() {
+        let d = dir_with(&[("a.js", "fs.readFileSync('/etc/passwd');")]);
+        let f = check_suspicious_strings(d.path());
+        assert!(sevs(&f).contains(&"BLOCK".to_string()));
+    }
+
+    #[test]
+    fn suspicious_strings_env_is_suspect() {
+        let d = dir_with(&[("a.js", "const t = process.env.TOKEN;")]);
+        let f = check_suspicious_strings(d.path());
+        assert!(sevs(&f).contains(&"SUSPECT".to_string()));
+    }
+
+    #[test]
+    fn network_imports_cjs_and_esm() {
+        let d = dir_with(&[
+            ("a.js", "const ax = require('axios');"),
+            ("b.mjs", "import axios from 'axios';"),
+        ]);
+        let f = check_network_imports(d.path());
+        assert_eq!(f.len(), 1);
+        let files = f[0].get("files").unwrap().as_array().unwrap();
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn network_imports_clean() {
+        let d = dir_with(&[("a.js", "const path = require('path');")]);
+        assert!(check_network_imports(d.path()).is_empty());
+    }
+
+    #[test]
+    fn dynamic_require_positive() {
+        let d = dir_with(&[("a.js", "const m = require(name);")]);
+        assert_eq!(sevs(&check_dynamic_require(d.path())), vec!["SUSPECT"]);
+        let d2 = dir_with(&[("b.js", "require(a + b);")]);
+        assert_eq!(sevs(&check_dynamic_require(d2.path())), vec!["SUSPECT"]);
+    }
+
+    #[test]
+    fn dynamic_require_negative() {
+        let d = dir_with(&[("a.js", "require('fs');\nrequire();\nconst p = require('path');")]);
+        assert!(check_dynamic_require(d.path()).is_empty());
+    }
+}
