@@ -43,6 +43,7 @@ fn print_layer_result(layer: &str, result: &CheckResult, use_color: bool) {
     println!("\n{}", "=".repeat(60));
     println!("Package : {}  [{}]", result.package, layer);
     println!("Verdict : {}", colored_verdict);
+    println!("Score   : {}/100", result.score);
 
     if let Some(note) = &result.note {
         println!("Note    : {}", note);

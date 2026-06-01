@@ -2,7 +2,7 @@ use serde_json::{Map, Value};
 
 use crate::age_check::check_age_and_downloads;
 use crate::maintainer::check_maintainer_change;
-use crate::models::{CheckResult, Finding, Verdict};
+use crate::models::{score_findings, CheckResult, Finding, Verdict};
 use crate::namespace::check_namespace_conflict;
 use crate::registry::get_package_info;
 use crate::typosquat::check_typosquat;
@@ -51,9 +51,11 @@ pub fn run_layer0(
     let info = match get_package_info(package_name) {
         None => {
             let verdict = aggregate_verdict(&findings);
+            let score = score_findings(&findings);
             return CheckResult {
                 package: package_name.to_string(),
                 verdict,
+                score,
                 findings,
                 note: Some(
                     "Package not found on npm registry; registry-based checks skipped".to_string(),
@@ -74,9 +76,11 @@ pub fn run_layer0(
     }
 
     let verdict = aggregate_verdict(&findings);
+    let score = score_findings(&findings);
     CheckResult {
         package: package_name.to_string(),
         verdict,
+        score,
         findings,
         note: None,
     }

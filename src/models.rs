@@ -28,7 +28,29 @@ impl std::fmt::Display for Verdict {
 pub struct CheckResult {
     pub package: String,
     pub verdict: Verdict,
+    /// Cumulative risk score (0–100), derived from finding severities.
+    pub score: u32,
     pub findings: Vec<Finding>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+}
+
+/// Risk weight contributed by a single finding of the given severity.
+fn severity_weight(severity: &str) -> u32 {
+    match severity {
+        "BLOCK" => 50,
+        "SUSPECT" => 15,
+        "INFO" => 2,
+        _ => 0,
+    }
+}
+
+/// Sum finding severities into a cumulative risk score, capped at 100.
+pub fn score_findings(findings: &[Finding]) -> u32 {
+    let total: u32 = findings
+        .iter()
+        .map(|f| f.get("severity").and_then(|v| v.as_str()).unwrap_or(""))
+        .map(severity_weight)
+        .sum();
+    total.min(100)
 }

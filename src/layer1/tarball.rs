@@ -20,6 +20,16 @@ pub fn get_latest_version_pkg_json(info: &Value) -> Option<Value> {
     Some(info.get("versions")?.get(latest)?.clone())
 }
 
+/// Tarball URL for a specific version.
+pub fn get_version_tarball_url(info: &Value, version: &str) -> Option<String> {
+    info.get("versions")?
+        .get(version)?
+        .get("dist")?
+        .get("tarball")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
 pub fn download_and_extract(tarball_url: &str) -> Result<TempDir> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(60))

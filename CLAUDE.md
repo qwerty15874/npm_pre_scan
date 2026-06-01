@@ -45,9 +45,10 @@ Severity rules:
 ### Layer 1 — What's built
 ```
 src/layer1/
-  mod.rs       run_layer1(name, info) → CheckResult; run_layer1_local(name, dir) → CheckResult
-  tarball.rs   get_tarball_url(), get_latest_version_pkg_json(), download_and_extract()
-  checks.rs    5 checks (see below)
+  mod.rs         run_layer1(name, info) → CheckResult; run_layer1_local(name, dir) → CheckResult
+  tarball.rs     get_tarball_url(), get_version_tarball_url(), download_and_extract()
+  checks.rs      5 static checks (see below)
+  version_diff.rs check_version_diff(info) — prev vs latest tarball line-diff
 
 Checks:
   install_script    package.json scripts.pre/install/postinstall  → SUSPECT
@@ -57,9 +58,15 @@ Checks:
                      process.env, os.homedir()                    → SUSPECT
   network_imports   require(axios/node-fetch/https/http/…)        → SUSPECT
   dynamic_require   require(variable)                             → SUSPECT
+  version_diff      newly-introduced eval(Buffer.from)/sensitive path → BLOCK
+                    newly-introduced eval/network/process.env     → SUSPECT
+                    (registry mode only; needs ≥2 versions; best-effort)
+
+Scoring: each finding adds weight (BLOCK=50, SUSPECT=15, INFO=2), capped at 100.
+         CheckResult.score (0–100) emitted alongside verdict for L0 and L1.
 
 Pipeline: Layer 0 runs first; Layer 1 skipped if Layer 0 = BLOCK
-Local test: npm-pre-scan --local <dir>  (no tarball download; reads dir directly)
+Local test: npm-pre-scan --local <dir>  (no tarball download; reads dir directly; version_diff skipped)
 ```
 
 ### Dummy packages — verification status
