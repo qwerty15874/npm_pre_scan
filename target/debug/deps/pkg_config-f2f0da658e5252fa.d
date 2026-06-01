@@ -1,7 +1,0 @@
-/home/hpschkk/npm_pre_scan/target/debug/deps/pkg_config-f2f0da658e5252fa.d: /home/hpschkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pkg-config-0.3.33/src/lib.rs
-
-/home/hpschkk/npm_pre_scan/target/debug/deps/libpkg_config-f2f0da658e5252fa.rlib: /home/hpschkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pkg-config-0.3.33/src/lib.rs
-
-/home/hpschkk/npm_pre_scan/target/debug/deps/libpkg_config-f2f0da658e5252fa.rmeta: /home/hpschkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pkg-config-0.3.33/src/lib.rs
-
-/home/hpschkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pkg-config-0.3.33/src/lib.rs:
