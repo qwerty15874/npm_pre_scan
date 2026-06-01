@@ -11,7 +11,15 @@
       "Bash(apt list *)",
       "Bash(dpkg -l)",
       "Bash(curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs)",
-      "Bash(sh -s -- -y --no-modify-path)"
+      "Bash(sh -s -- -y --no-modify-path)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git config *)",
+      "Bash(git push *)",
+      "Bash(ssh -T git@github.com)",
+      "Bash(grep -v '^\\\\s*$')",
+      "WebFetch(domain:docs.npmjs.com)",
+      "WebFetch(domain:docs.rs)"
     ]
   }
 }
