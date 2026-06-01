@@ -48,6 +48,20 @@ pub fn get_downloads(name: &str, period: &str) -> Option<u64> {
     data.get("downloads")?.as_u64()
 }
 
+/// Fetch the npm registry's public signing keys.
+/// GET https://registry.npmjs.org/-/npm/v1/keys → returns the `keys` array.
+/// Best-effort: `None` on any network/parse error.
+pub fn get_registry_keys() -> Option<Vec<Value>> {
+    let client = make_client()?;
+    let url = format!("{}/-/npm/v1/keys", REGISTRY_BASE);
+    let resp = client.get(&url).send().ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let data: Value = resp.json().ok()?;
+    data.get("keys")?.as_array().cloned()
+}
+
 /// Parse the `time.created` field from package info and return age in days.
 /// Returns `None` if the field is missing or unparseable.
 pub fn get_package_age_days(info: &Value) -> Option<f64> {

@@ -93,14 +93,28 @@ pub fn check_typosquat(name: &str, top_packages: &[String]) -> Option<Map<String
 
     match min_dist {
         1 => {
-            f.insert("severity".into(), Value::String("BLOCK".into()));
-            f.insert(
-                "message".into(),
-                Value::String(format!(
-                    "Very likely typosquat of '{}' (Levenshtein distance={})",
-                    pkg, min_dist
-                )),
-            );
+            // A larger top-list makes distance-1 collisions with short legitimate
+            // names common, so only BLOCK when the name is long enough to be a
+            // deliberate typo; shorter near-misses downgrade to SUSPECT.
+            if bare.len() >= 5 {
+                f.insert("severity".into(), Value::String("BLOCK".into()));
+                f.insert(
+                    "message".into(),
+                    Value::String(format!(
+                        "Very likely typosquat of '{}' (Levenshtein distance={})",
+                        pkg, min_dist
+                    )),
+                );
+            } else {
+                f.insert("severity".into(), Value::String("SUSPECT".into()));
+                f.insert(
+                    "message".into(),
+                    Value::String(format!(
+                        "Possible typosquat of '{}' (Levenshtein distance={}, short name)",
+                        pkg, min_dist
+                    )),
+                );
+            }
             Some(f)
         }
         2 => {

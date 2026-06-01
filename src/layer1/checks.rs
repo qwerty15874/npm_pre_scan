@@ -13,6 +13,8 @@ fn finding(check: &str, severity: &str, message: &str) -> Finding {
     m
 }
 
+const JS_EXTENSIONS: &[&str] = &["js", "cjs", "mjs", "ts", "tsx", "jsx"];
+
 fn js_files(dir: &Path) -> Vec<PathBuf> {
     WalkDir::new(dir)
         .into_iter()
@@ -21,7 +23,7 @@ fn js_files(dir: &Path) -> Vec<PathBuf> {
             e.path()
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .map(|ext| ext == "js")
+                .map(|ext| JS_EXTENSIONS.contains(&ext))
                 .unwrap_or(false)
         })
         .map(|e| e.path().to_path_buf())
@@ -138,15 +140,19 @@ pub fn check_suspicious_strings(dir: &Path) -> Vec<Finding> {
 
 /// Scan .js files for network-capable module imports (axios, node-fetch, https, http, etc.).
 pub fn check_network_imports(dir: &Path) -> Vec<Finding> {
-    let re = Regex::new(
-        r#"require\s*\(\s*['"](?:axios|node-fetch|cross-fetch|https?|got|superagent|request)['"]\s*\)"#,
-    )
-    .unwrap();
+    const MOD: &str = "axios|node-fetch|cross-fetch|https?|got|superagent|request";
+    let patterns = [
+        format!(r#"require\s*\(\s*['"](?:{MOD})['"]\s*\)"#),
+        format!(r#"import\s+[^;]*?from\s*['"](?:{MOD})['"]"#),
+        format!(r#"import\s*['"](?:{MOD})['"]"#),
+        format!(r#"import\s*\(\s*['"](?:{MOD})['"]\s*\)"#),
+    ];
+    let res: Vec<Regex> = patterns.iter().map(|p| Regex::new(p).unwrap()).collect();
 
     let mut hit_files: Vec<String> = Vec::new();
     for path in js_files(dir) {
         let Ok(content) = std::fs::read_to_string(&path) else { continue };
-        if re.is_match(&content) {
+        if res.iter().any(|re| re.is_match(&content)) {
             hit_files.push(rel(dir, &path));
         }
     }
@@ -168,7 +174,7 @@ pub fn check_network_imports(dir: &Path) -> Vec<Finding> {
 
 /// Scan .js files for dynamic require(variable) — require called with a non-literal argument.
 pub fn check_dynamic_require(dir: &Path) -> Vec<Finding> {
-    let re = Regex::new(r"require\(\s*[a-zA-Z_$][a-zA-Z0-9_$.]*\s*\)").unwrap();
+    let re = Regex::new(r#"require\(\s*[^'")\s][^)]*\)"#).unwrap();
 
     let mut findings = Vec::new();
     for path in js_files(dir) {

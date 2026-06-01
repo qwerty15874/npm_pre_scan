@@ -36,11 +36,17 @@ fn sorted_versions(info: &Value) -> Vec<String> {
 }
 
 /// Map of relative .js path → file contents under `dir`.
+const JS_EXTENSIONS: &[&str] = &["js", "cjs", "mjs", "ts", "tsx", "jsx"];
+
 fn js_contents(dir: &Path) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
         let p = entry.path();
-        if p.extension().and_then(|e| e.to_str()) == Some("js") {
+        if p.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| JS_EXTENSIONS.contains(&e))
+            .unwrap_or(false)
+        {
             if let Ok(content) = std::fs::read_to_string(p) {
                 let rel = p.strip_prefix(dir).unwrap_or(p).display().to_string();
                 map.insert(rel, content);

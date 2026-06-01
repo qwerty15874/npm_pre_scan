@@ -75,6 +75,11 @@ pub fn run_layer0(
         push_finding(&mut findings, "maintainer", raw);
     }
 
+    // Check 5: Registry signature verification
+    if let Some(raw) = crate::signatures::check_signatures(package_name, &info) {
+        push_finding(&mut findings, "signatures", raw);
+    }
+
     let verdict = aggregate_verdict(&findings);
     let score = score_findings(&findings);
     CheckResult {

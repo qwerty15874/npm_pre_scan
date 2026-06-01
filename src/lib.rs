@@ -5,6 +5,7 @@ pub mod maintainer;
 pub mod models;
 pub mod namespace;
 pub mod registry;
+pub mod signatures;
 pub mod typosquat;
 
 pub use checker::run_layer0;

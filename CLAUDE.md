@@ -18,10 +18,11 @@ Scoring  [░░░░░░░░░░░░░░░░░░░░] TODO   A
 src/                            Rust implementation
   checker.rs    run_layer0(name) → CheckResult {verdict, findings}
   registry.rs   npm registry + downloads API (reqwest blocking)
-  typosquat.rs  levenshtein() + check_typosquat() vs top_packages.txt (~240 pkgs)
+  typosquat.rs  levenshtein() + check_typosquat() vs top_packages.txt (~1137 pkgs)
   age_check.rs  age < 7 days + download spike ratio (5x threshold)
   maintainer.rs compares first-version vs latest-version maintainer set
-  namespace.rs  unscoped name vs top_scoped_packages.txt (~80 scoped pkgs)
+  signatures.rs verifies registry ECDSA-P256 signature (npm audit signatures)
+  namespace.rs  unscoped name vs top_scoped_packages.txt (94 scoped pkgs)
   models.rs     Verdict enum, Finding type, CheckResult struct
   main.rs       CLI: npm-pre-scan [--json] [--no-color] <pkg> [<pkg>...]
 
@@ -33,11 +34,14 @@ Binary: npm-pre-scan [--json] [--no-color] <pkg> [<pkg>...]
         exit 0=PASS  1=SUSPECT  2=BLOCK
 
 Severity rules:
-  typosquat distance=1  → BLOCK
+  typosquat distance=1 (name ≥5 chars) → BLOCK
+  typosquat distance=1 (name <5 chars) → SUSPECT
   typosquat distance=2  → SUSPECT
   namespace conflict    → BLOCK
   age<7d + spike        → SUSPECT
   maintainer change     → SUSPECT
+  signature missing     → SUSPECT
+  signature invalid / no valid key → BLOCK
   (any BLOCK present)   → verdict BLOCK
   (any SUSPECT, no BLOCK) → verdict SUSPECT
 ```
