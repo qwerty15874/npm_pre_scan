@@ -1,246 +1,298 @@
 # CLAUDE.md
-> Last updated: 2026-05-29
+> Last updated: 2026-06-08
+
+---
 
 ## Progress
 
 ```
-Pipeline: input package name → Layer 0 → Layer 1 → Layer 2 → Layer 3 → risk score
+Pipeline: package name → Layer 0 → Layer 1 → Layer 2 → Layer 3 → risk score
 
-Layer 0  [████████████████████] DONE   Metadata check (no execution)
-Layer 1  [████████████████████] DONE   Static analysis (no execution)
-Layer 2  [░░░░░░░░░░░░░░░░░░░░] TODO   Dynamic — simple run (Docker)
+Layer 0  [████████████████████] DONE   Metadata check        (no execution, Rust)
+Layer 1  [████████████████████] DONE   Static analysis       (no execution, Rust)
+Layer 2  [░░░░░░░░░░░░░░░░░░░░] TODO   Dynamic — simple run  (Docker)
 Layer 3  [░░░░░░░░░░░░░░░░░░░░] TODO   Dynamic — condition mutation (Docker)
 Scoring  [░░░░░░░░░░░░░░░░░░░░] TODO   Aggregate risk score
 ```
 
-### Layer 0 — What's built
+---
+
+## Research Positioning (IMPORTANT — avoid scope confusion)
+
+### This tool is an independent research artifact
+- **Decoupled from the KIISC measurement paper** (HCR/DAF/TTD/EWDT, 4-registry comparison).
+  - The measurement study is small in scale and unsuitable as a justification base → dependency dropped.
+  - The tool stands without citing the KIISC paper.
+- **The tool's justification comes from a gap in international SOTA tools:**
+  - Existing dynamic detection tools (MalOSS, OSCAR, DONAPI) cover install/import/run-time,
+    but lack **active triggering (clock manipulation, environment spoofing, API fuzzing)**
+    for condition-gated attacks (time-bomb, environment-triggered, trigger-on-use).
+  - This tool fills that gap.
+
+### Core contributions (emphasize BOTH)
+1. **Unified single tool (Layer 0~3)** — covers all in-scope npm attack vectors, from metadata to condition mutation.
+2. **Layer 3 active condition mutation** — detects time-bomb / env-triggered / trigger-on-use, which existing tools do not.
+
+### One-line contribution statement
+> "A unified single npm tool spanning metadata to dynamic analysis that detects condition-gated
+> attacks (time-bomb, environment-triggered, trigger-on-use) — which existing dynamic detection
+> tools fail to trigger — via active condition mutation (clock manipulation, environment spoofing,
+> API fuzzing)."
+
+---
+
+## ★ Design Goal: Complete Attack-Vector Coverage (within defined scope)
+
+**The tool MUST cover every attack vector within its defined scope. This is a hard requirement, not a best-effort target.**
+
+### Scope definition (must be stated explicitly in the paper)
+Coverage is defined over **attack vectors detectable by an npm package consumer at install time**,
+based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
+- IN SCOPE: vectors reachable after a package lands on the npm registry, detectable from the
+  downstream-consumer perspective (naming confusion, malicious package content, condition-gated payloads).
+- OUT OF SCOPE: VCS compromise, CI/CD injection, build-system tampering — not detectable by a
+  package scanner. Declaring this boundary is itself part of the contribution.
+
+### Coverage rule
+- Every IN-SCOPE vector (A1–D3 below) MUST map to at least one Layer.
+- No in-scope vector may be silently skipped. If a vector cannot be reliably detected,
+  it must be explicitly documented as a known limitation (not omitted).
+- The early-exit optimization (Layer 0 BLOCK skips Layer 1) is a performance choice and
+  does NOT reduce coverage: the final verdict still represents the full in-scope vector set.
+
+### Coverage matrix (target: 100% of in-scope vectors)
+
+| ID | Attack vector | Trigger | Layer | Dummy package | Status |
+|----|---------------|---------|-------|---------------|--------|
+| A1 | Typosquatting | metadata | Layer 0 | dummy_typosquat | ✅ DONE |
+| A2 | Dependency Confusion | metadata | Layer 0 | dummy_dep_confusion | TODO |
+| A3 | Account Hijacking (maintainer change) | metadata | Layer 0 | dummy_hijack | TODO |
+| A4 | Combosquatting | metadata | Layer 0 | dummy_combosquat | TODO (candidate) |
+| B1 | Install-time script (pre/postinstall) | install | Layer 1+2 | dummy_install_time | TODO |
+| B2 | Obfuscation (eval+base64, hex) | install/import | Layer 1 | dummy_obfuscated | ✅ DONE |
+| B3 | Malicious version update (legit pkg subversion) | install/import | Layer 1 (version diff) | dummy_malicious_update | TODO (candidate) |
+| C1 | Import-time execution (top-level index.js) | import | Layer 2 | dummy_import_time | TODO |
+| C2 | Slow exfiltration (DNS tunneling) | import/run | Layer 2 | dummy_slow_exfil | TODO |
+| C3 | Hidden binary (.node C extension) | import/run | Layer 2 | dummy_binary | TODO |
+| D1 | Time Bomb (date/time-gated) | condition | Layer 3 | dummy_timebomb | TODO |
+| D2 | Environment-triggered (CI evasion) | condition | Layer 3 | dummy_env_triggered | TODO |
+| D3 | Trigger-on-use (API-call-gated) | run-time | Layer 3 | dummy_api_triggered | TODO |
+
+> A4, B3 are candidates — confirm based on implementation cost.
+> Coverage is considered complete only when every non-candidate in-scope vector is VERIFIED.
+
+---
+
+## Change Log
+
+### v1: Initial design
+- Python pipeline + Docker, Layer 0~3 early-exit structure.
+
+### v2: Implementation underway
+- Language switched Python → Rust (Layer 0, 1 done).
+- Layer 0 = BLOCK skips Layer 1 (performance optimization).
+
+### v3: Advisor feedback (cover all attack patterns + single tool)
+- Added Ladisa-based vector classification, expanded dummy packages.
+
+### v4: Research repositioning (2026-06-08)
+- **Dropped KIISC measurement-paper dependency** → tool redefined as independent research.
+- Justification moved from "limitations of my measurement paper" to "gap in international SOTA tools."
+- Comparison targets: OSCAR (ASE 2024), MalOSS (NDSS 2021), DONAPI (USENIX 2024).
+- Ladisa 107 vectors → explicitly scoped to npm-consumer-detectable vectors.
+- Both core contributions emphasized: (1) unified single tool, (2) Layer 3 condition mutation.
+
+### v5: Coverage made a hard requirement (2026-06-08)
+- Added "Complete Attack-Vector Coverage (within defined scope)" as an explicit, mandatory design goal.
+- Coverage rule: every in-scope vector maps to a Layer; undetectable ones documented as limitations, not omitted.
+
+---
+
+## Implementation Status
+
+### Layer 0 — DONE
 ```
-src/                            Rust implementation
-  checker.rs    run_layer0(name) → CheckResult {verdict, findings}
-  registry.rs   npm registry + downloads API (reqwest blocking)
-  typosquat.rs  levenshtein() + check_typosquat() vs top_packages.txt (~1137 pkgs)
-  age_check.rs  age < 7 days + download spike ratio (5x threshold)
-  maintainer.rs compares first-version vs latest-version maintainer set
-  signatures.rs verifies registry ECDSA-P256 signature (npm audit signatures)
-  namespace.rs  unscoped name vs top_scoped_packages.txt (94 scoped pkgs)
-  models.rs     Verdict enum, Finding type, CheckResult struct
-  main.rs       CLI: npm-pre-scan [--json] [--no-color] <pkg> [<pkg>...]
+src/
+  checker.rs      run_layer0(name) → CheckResult {verdict, findings}
+  registry.rs     npm registry + downloads API (reqwest blocking)
+  typosquat.rs    levenshtein() + check_typosquat() vs top_packages.txt (~1137 pkgs)
+  age_check.rs    age < 7 days + download spike ratio (5× threshold)
+  maintainer.rs   first-version vs latest-version maintainer set comparison
+  signatures.rs   registry ECDSA-P256 signature verification (npm audit signatures)
+  namespace.rs    unscoped name vs top_scoped_packages.txt (94 scoped pkgs)
+  models.rs       Verdict enum, Finding type, CheckResult struct
+  main.rs         CLI: npm-pre-scan [--json] [--no-color] <pkg> [<pkg>...]
 
-data/top_packages.txt        — embedded at compile time; add entries to extend coverage
-data/top_scoped_packages.txt — embedded at compile time; add entries to extend coverage
+data/top_packages.txt        — embedded at compile time
+data/top_scoped_packages.txt — embedded at compile time
 
-Binary: npm-pre-scan [--json] [--no-color] <pkg> [<pkg>...]
-        npm-pre-scan --local <dir>          (Layer 1 only on local dir)
-        exit 0=PASS  1=SUSPECT  2=BLOCK
+Binary:
+  npm-pre-scan [--json] [--no-color] <pkg> [<pkg>...]
+  npm-pre-scan --local <dir>   (Layer 1 only on local dir)
+  exit 0=PASS  1=SUSPECT  2=BLOCK
 
 Severity rules:
-  typosquat distance=1 (name ≥5 chars) → BLOCK
-  typosquat distance=1 (name <5 chars) → SUSPECT
-  typosquat distance=2  → SUSPECT
-  namespace conflict    → BLOCK
-  age<7d + spike        → SUSPECT
-  maintainer change     → SUSPECT
-  signature missing     → SUSPECT
-  signature invalid / no valid key → BLOCK
-  (any BLOCK present)   → verdict BLOCK
-  (any SUSPECT, no BLOCK) → verdict SUSPECT
+  typosquat distance=1 (name ≥5 chars)      → BLOCK
+  typosquat distance=1 (name <5 chars)       → SUSPECT
+  typosquat distance=2                       → SUSPECT
+  namespace conflict                         → BLOCK
+  age<7d + spike                             → SUSPECT
+  maintainer change                          → SUSPECT
+  signature missing                          → SUSPECT
+  signature invalid / no valid key           → BLOCK
+  (any BLOCK present)                        → verdict BLOCK
+  (any SUSPECT, no BLOCK)                    → verdict SUSPECT
 ```
 
-### Layer 1 — What's built
+### Layer 1 — DONE
 ```
 src/layer1/
-  mod.rs         run_layer1(name, info) → CheckResult; run_layer1_local(name, dir) → CheckResult
-  tarball.rs     get_tarball_url(), get_version_tarball_url(), download_and_extract()
-  checks.rs      5 static checks (see below)
+  mod.rs          run_layer1(name, info), run_layer1_local(name, dir)
+  tarball.rs      get_tarball_url(), download_and_extract()
+  checks.rs       5 static checks
   version_diff.rs check_version_diff(info) — prev vs latest tarball line-diff
 
 Checks:
-  install_script    package.json scripts.pre/install/postinstall  → SUSPECT
-  obfuscation       eval(Buffer.from())                           → BLOCK
-                    eval(), hex sequences, long base64 strings    → SUSPECT
-  suspicious_strings /etc/passwd, /etc/shadow, ~/.ssh             → BLOCK
-                     process.env, os.homedir()                    → SUSPECT
-  network_imports   require(axios/node-fetch/https/http/…)        → SUSPECT
-  dynamic_require   require(variable)                             → SUSPECT
-  version_diff      newly-introduced eval(Buffer.from)/sensitive path → BLOCK
-                    newly-introduced eval/network/process.env     → SUSPECT
-                    (registry mode only; needs ≥2 versions; best-effort)
+  install_script      scripts.pre/install/postinstall      → SUSPECT
+  obfuscation         eval(Buffer.from())                  → BLOCK
+                      eval(), hex, long base64             → SUSPECT
+  suspicious_strings  /etc/passwd, /etc/shadow, ~/.ssh     → BLOCK
+                      process.env, os.homedir()            → SUSPECT
+  network_imports     require(axios/node-fetch/https/…)    → SUSPECT
+  dynamic_require     require(variable)                    → SUSPECT
+  version_diff        newly-introduced eval(Buffer.from)/sensitive → BLOCK
+                      newly-introduced eval/network/process.env    → SUSPECT
 
-Scoring: each finding adds weight (BLOCK=50, SUSPECT=15, INFO=2), capped at 100.
-         CheckResult.score (0–100) emitted alongside verdict for L0 and L1.
-
-Pipeline: Layer 0 runs first; Layer 1 skipped if Layer 0 = BLOCK
-Local test: npm-pre-scan --local <dir>  (no tarball download; reads dir directly; version_diff skipped)
+Scoring: BLOCK=50, SUSPECT=15, INFO=2 weighted sum, capped at 100
+Pipeline: Layer 0 BLOCK → Layer 1 skipped
+Local test: npm-pre-scan --local <dir>
 ```
 
-### Dummy packages — verification status
-| Package | Target layer | Prior layers | Status |
-|---|---|---|---|
-| dummy_typosquat (`expres`) | Layer 0 | — | VERIFIED: BLOCK (typosquat distance=1 from express) |
-| dummy_obfuscated | Layer 1 | L0 PASS | VERIFIED: BLOCK (eval+Buffer.from, install scripts, process.env, network imports) |
-| dummy_install_time | Layer 2 | L0-1 PASS | not built |
-| dummy_import_time | Layer 2 | L0-1 PASS | not built |
-| dummy_timebomb | Layer 3 | L0-2 PASS | not built |
-| dummy_env_triggered | Layer 3 | L0-2 PASS | not built |
-| dummy_api_triggered | Layer 3 | L0-2 PASS | not built |
-
-## Goal
-npm 패키지 레지스트리를 대상으로 한 **동적 공급망 공격 탐지 프로토타입** 구현.
-정적 분석(HCR 등) 중심의 기존 논문 측정 방법론을 보완하여, 실제 행동 기반 탐지 파이프라인을 Layer 0~3 구조로 구축한다.
-
-## Tech Stack
-- 언어: Rust (파이프라인 오케스트레이션), Node.js (npm 패키지 실행 환경)
-- 컨테이너: Docker (샌드박스 격리)
-- 모니터링: strace (syscall), tcpdump (네트워크), DNS 쿼리 로깅
-- 시계 조작: libfaketime
-- 타이포스쿼팅 탐지: Levenshtein 거리 계산
-- 더미 패키지: 각 공격 유형별 npm 패키지 직접 제작
-
-## Decisions Made
-- **스코프**: npm 단독 프로토타입으로 시작 (PyPI/Maven/NuGet 확장은 이후)
-- **그룹화 기준**: 탐지에 필요한 분석 방법 + 실행 비용 기준으로 Layer화
-- **검증 방식**: 더미 패키지를 레이어별로 개별 제작 → 해당 레이어에서만 탐지되고 이전 레이어에서는 통과되는 것을 확인
-- **더미 패키지 검증 순서**: 레이어 완성 즉시 해당 더미 패키지 검증 (전체 완성 후 일괄 검증 X)
-
-## Architecture
-
-### Layer 0: 메타데이터 검사 (실행 불필요)
+### Layer 2 — TODO
 ```
-입력: 패키지명
-검사:
-  - 타이포스쿼팅: 상위 1000개 패키지와 Levenshtein 거리 ≤ 2
-  - 등록 이력: 패키지 나이 < 7일 + 다운로드 급등
-  - maintainer: 최근 소유자 변경 여부 (npm audit signatures)
-  - 네임스페이스: unscoped 패키지가 scoped 인기 패키지와 충돌
-출력: PASS / SUSPECT / BLOCK
+Environment: Docker container (network-isolated)
+Execution:
+  Step 1. npm install → observe install-time behavior
+  Step 2. node -e "require('pkg')" → observe import-time behavior
+Monitoring: strace (file syscalls), tcpdump (network), DNS logs, child_process detection
+Covers: B1 (dynamic), C1, C2, C3
 ```
 
-### Layer 1: 정적 분석 (실행 불필요)
+### Layer 3 — TODO (★ core contribution)
 ```
-입력: package.json + 소스코드 (tarball 압축 해제)
-검사:
-  - install script 존재 여부 (pre/post/install)
-  - 난독화 탐지: eval(Buffer.from(...,'base64')), hex 문자열
-  - 의심 문자열: process.env, ~/.ssh, /etc/passwd
-  - 네트워크 관련 import: axios/node-fetch/http 조합
-  - 동적 require: require(변수) 패턴
-  - 이전 버전 대비 diff (새로 추가된 코드 블록)
-출력: 위험 신호 목록 + 점수
+Environment: Layer 2 container + mutation layer (run ALL scenarios)
+Scenario 1 — clock manipulation: libfaketime +30d/+90d/+180d, re-run
+Scenario 2 — environment spoofing: HOME=/home/developer, USER=dev, strip CI env vars, change hostname
+Scenario 3 — API fuzzing: auto-invoke all public exports with dummy args (string/number/object/null/undefined)
+Output: per-scenario behavior diff (new events vs Layer 2 baseline)
+Covers: D1, D2, D3
+→ Active condition mutation not performed by existing tools (incl. OSCAR). The differentiator.
 ```
 
-### Layer 2: 동적 분석 — 단순 실행
+### Risk-score aggregation — TODO
+```json
+{
+  "package": "name",
+  "risk_score": 0.87,
+  "detections": {
+    "layer_0": ["A1: typosquatting (edit_dist=1 from 'express')"],
+    "layer_1": ["B2: obfuscation (eval+base64 at index.js:12)"],
+    "layer_2": [],
+    "layer_3": ["D1: timebomb (network activity after +90d)"]
+  }
+}
 ```
-환경: Docker 컨테이너 (네트워크 격리)
-실행:
-  1. npm install → install-time 행동 관찰
-  2. node -e "require('패키지명')" → import-time 관찰
-모니터링:
-  - strace: 파일 접근 (read/write/open)
-  - 네트워크: tcpdump + DNS 쿼리 로깅
-  - 프로세스: child_process.exec/spawn 감지
-출력: syscall 로그 + 네트워크 로그
-```
-
-### Layer 3: 동적 분석 — 조건 변조
-```
-환경: Layer 2 컨테이너 + 변조 레이어
-시나리오 (순차 실행):
-  - 시계 조작: libfaketime으로 +30일, +90일, +180일
-  - 환경 위장: HOME=/home/developer, USER=dev, CI 환경변수 제거
-  - 호스트명 위장: 일반 개발자 PC명으로
-  - API 퍼징: export 함수를 더미 인자로 자동 호출
-출력: 각 시나리오별 행동 diff (Layer 2 기준선 대비)
-```
-
-## Implementation Tasks
-- [x] Layer 0: npm registry API 연동 + Levenshtein 타이포스쿼팅 탐지 구현
-- [x] Layer 0: dummy_typosquat 패키지 제작 및 탐지 검증
-- [x] Layer 1: tarball 다운로드 + 정적 분석기 구현 (install script, 난독화, 의심 문자열)
-- [x] Layer 1: dummy_obfuscated 패키지 제작 및 탐지 검증
-- [ ] Layer 2: Docker 샌드박스 환경 구성 (strace + tcpdump + DNS 로깅)
-- [ ] Layer 2: npm install + require() 자동 실행 및 로그 수집
-- [ ] Layer 2: dummy_install_time, dummy_import_time 패키지 제작 및 검증
-- [ ] Layer 3: libfaketime 통합 + 시계 조작 시나리오 구현
-- [ ] Layer 3: 환경변수 위장 + API 퍼징 구현
-- [ ] Layer 3: dummy_timebomb, dummy_env_triggered, dummy_api_triggered 패키지 제작 및 검증
-- [ ] 신뢰도 점수 통합: 각 레이어 출력 → 단일 리스크 스코어로 집계
-- [ ] 전체 파이프라인 연결 및 E2E 테스트
-
-## Constraints
-- npm 단독 프로토타입 (PyPI/Maven/NuGet 확장은 향후)
-- Docker 컨테이너 필수 (호스트 시스템 보호)
-- Layer 0 → 1 → 2 → 3 순으로 조기 배제 구조 유지 (비용 낮은 레이어 먼저)
-- 더미 패키지는 실제 npm publish 없이 로컬 테스트 환경에서만 사용
-
-## Dummy Package Checklist
-| 패키지명 | 탐지 레이어 | 이전 레이어 통과 여부 |
-|---|---|---|
-| dummy_typosquat | Layer 0 | - |
-| dummy_obfuscated | Layer 1 | Layer 0 PASS |
-| dummy_install_time | Layer 2 | Layer 0-1 PASS |
-| dummy_import_time | Layer 2 | Layer 0-1 PASS |
-| dummy_timebomb | Layer 3 (시계 조작) | Layer 0-2 PASS |
-| dummy_env_triggered | Layer 3 (환경 위장) | Layer 0-2 PASS |
-| dummy_api_triggered | Layer 3 (API 퍼징) | Layer 0-2 PASS |
-
-## References
-- 논문: 패키지 레지스트리의 다각적 위험도 측정 방법론 (KIISC, 진행 중)
-- 데이터: OpenSSF malicious-packages GitHub repo
-- 선행 연구: MalOSS (Duan et al., NDSS 2021), OSSF Package Analysis (strace 기반)
-- arXiv:2512.14739 (DAF 수치 출처)
-- WSL 환경: \\wsl.localhost\Ubuntu\home\hpschkk\npm_pre_scan\
 
 ---
-Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
-Tradeoff: These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+## Dummy Packages — verification status
 
-1. Think Before Coding
-Don't assume. Don't hide confusion. Surface tradeoffs.
+| Package | Target layer | Prior layers | Status |
+|---------|-------------|--------------|--------|
+| dummy_typosquat (`expres`) | Layer 0 | — | ✅ VERIFIED: BLOCK |
+| dummy_obfuscated | Layer 1 | L0 PASS | ✅ VERIFIED: BLOCK |
+| dummy_dep_confusion | Layer 0 | — | TODO |
+| dummy_hijack | Layer 0 | — | TODO |
+| dummy_install_time | Layer 2 | L0-1 PASS | TODO |
+| dummy_import_time | Layer 2 | L0-1 PASS | TODO |
+| dummy_slow_exfil | Layer 2 | L0-1 PASS | TODO |
+| dummy_binary | Layer 2 | L0-1 PASS | TODO |
+| dummy_timebomb | Layer 3 | L0-2 PASS | TODO |
+| dummy_env_triggered | Layer 3 | L0-2 PASS | TODO |
+| dummy_api_triggered | Layer 3 | L0-2 PASS | TODO |
 
-Before implementing:
+---
 
-State your assumptions explicitly. If uncertain, ask.
-If multiple interpretations exist, present them - don't pick silently.
-If a simpler approach exists, say so. Push back when warranted.
-If something is unclear, stop. Name what's confusing. Ask.
-2. Simplicity First
-Minimum code that solves the problem. Nothing speculative.
+## Evaluation — TBD
+- Dummy-package verification stays (confirms each Layer works as intended).
+- Whether to add a real malicious-package benchmark (e.g., OSSF malicious-packages) is undecided.
+- Note: OSCAR reports F1 0.95 (npm) on a real benchmark — an independent tool may need performance metrics.
+- **Decision deferred.**
 
-No features beyond what was asked.
-No abstractions for single-use code.
-No "flexibility" or "configurability" that wasn't requested.
-No error handling for impossible scenarios.
-If you write 200 lines and it could be 50, rewrite it.
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+---
 
-3. Surgical Changes
-Touch only what you must. Clean up only your own mess.
+## Task Checklist
 
-When editing existing code:
+### Layer 0 follow-up
+- [ ] Build & verify dummy_dep_confusion (A2)
+- [ ] Build & verify dummy_hijack (A3)
 
-Don't "improve" adjacent code, comments, or formatting.
-Don't refactor things that aren't broken.
-Match existing style, even if you'd do it differently.
-If you notice unrelated dead code, mention it - don't delete it.
-When your changes create orphans:
+### Layer 2
+- [ ] Docker base image (node:lts-alpine + strace + tcpdump)
+- [ ] Network isolation setup
+- [ ] Auto npm install + strace integration
+- [ ] Auto node -e "require()" + monitoring
+- [ ] Log parser (syscall → structured events)
+- [ ] Verify: dummy_install_time, dummy_import_time, dummy_slow_exfil, dummy_binary
 
-Remove imports/variables/functions that YOUR changes made unused.
-Don't remove pre-existing dead code unless asked.
-The test: Every changed line should trace directly to the user's request.
+### Layer 3 (core contribution)
+- [ ] libfaketime container integration
+- [ ] Environment-spoofing script
+- [ ] API fuzzer (auto-detect exports + dummy-arg invocation)
+- [ ] Behavior diff vs Layer 2 baseline
+- [ ] Verify: dummy_timebomb, dummy_env_triggered, dummy_api_triggered
 
-4. Goal-Driven Execution
-Define success criteria. Loop until verified.
+### Integration
+- [ ] Layer 0~3 outputs → weighted risk score
+- [ ] JSON report output
+- [ ] Confirm full coverage: every non-candidate in-scope vector VERIFIED
+- [ ] Finalize evaluation method (TBD)
 
-Transform tasks into verifiable goals:
+---
 
-"Add validation" → "Write tests for invalid inputs, then make them pass"
-"Fix the bug" → "Write a test that reproduces it, then make it pass"
-"Refactor X" → "Ensure tests pass before and after"
-For multi-step tasks, state a brief plan:
+## Tech Stack
+- Language: Rust (Layer 0, 1), Docker + shell (Layer 2, 3)
+- Container: Docker
+- Monitoring: strace, tcpdump, DNS logging
+- Clock manipulation: libfaketime
+- Static analysis: custom Rust (regex + string patterns)
+- Typosquatting: Levenshtein (custom Rust)
 
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+## Constraints
+- npm-only (justification: most dangerous ecosystem due to install-time execution; independent of measurement paper)
+- Docker required — host protection
+- Dummy packages: local test only (never npm publish)
+- Layer 0 → 1 → 2 → 3 sequential, single entry point npm-pre-scan
+- Scope: only vectors an npm consumer can detect at install time (VCS/build compromise excluded)
+
+## Environment
+- WSL Ubuntu: \\wsl.localhost\Ubuntu\home\hpschkk\npm_pre_scan\
+
+## References (independent justification base)
+- Ladisa et al., "SoK: Taxonomy of Attacks on OSS Supply Chains", IEEE S&P 2023 — classification base
+- Zheng et al., "OSCAR", ASE 2024 — comparison target, basis for Layer 3 gap
+- Duan et al., "MalOSS", NDSS 2021 — comparison target (simplistic testing limitation)
+- Huang et al., "DONAPI", USENIX Security 2024 — comparison target
+- OSSF malicious-packages GitHub repo — candidate evaluation dataset
+- (KIISC measurement paper decoupled — no citation required)
+
+---
+
+## Coding Guidelines
+1. Think Before Coding: state assumptions, ask if uncertain, surface tradeoffs.
+2. Simplicity First: only what's asked, no speculative features, rewrite if overcomplicated.
+3. Surgical Changes: touch only what's needed, don't improve adjacent code, match existing style.
+4. Goal-Driven: define success criteria first; multi-step → plan then verify.
+
+---
 > This file is auto-maintained by the code-sync skill. Do not edit manually unless necessary.
