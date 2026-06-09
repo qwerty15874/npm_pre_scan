@@ -276,7 +276,7 @@ Covers: D1, D2, D3
 - Scope: only vectors an npm consumer can detect at install time (VCS/build compromise excluded)
 
 ## Environment
-- WSL Ubuntu: \\wsl.localhost\Ubuntu\home\hpschkk\npm_pre_scan\
+- NixOS LINUX Location:/home/hpschkkim/문서/Dev/npm_pre_scan
 
 ## References (independent justification base)
 - Ladisa et al., "SoK: Taxonomy of Attacks on OSS Supply Chains", IEEE S&P 2023 — classification base
