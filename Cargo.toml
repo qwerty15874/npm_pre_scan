@@ -22,3 +22,7 @@ regex = "1"
 walkdir = "2"
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 base64 = "0.22"
+
+[dev-dependencies]
+chrono = "0.4"
+serde_json = "1"

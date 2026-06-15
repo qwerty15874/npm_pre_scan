@@ -65,8 +65,8 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 | ID | Attack vector | Trigger | Layer | Dummy package | Status |
 |----|---------------|---------|-------|---------------|--------|
 | A1 | Typosquatting | metadata | Layer 0 | dummy_typosquat | ✅ DONE |
-| A2 | Dependency Confusion | metadata | Layer 0 | dummy_dep_confusion | TODO |
-| A3 | Account Hijacking (maintainer change) | metadata | Layer 0 | dummy_hijack | TODO |
+| A2 | Dependency Confusion | metadata | Layer 0 | dummy_dep_confusion | ✅ DONE |
+| A3 | Account Hijacking (maintainer change) | metadata | Layer 0 | dummy_hijack | ✅ DONE |
 | A4 | Combosquatting | metadata | Layer 0 | dummy_combosquat | TODO (candidate) |
 | B1 | Install-time script (pre/postinstall) | install | Layer 1+2 | dummy_install_time | TODO |
 | B2 | Obfuscation (eval+base64, hex) | install/import | Layer 1 | dummy_obfuscated | ✅ DONE |
@@ -101,6 +101,11 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 - Comparison targets: OSCAR (ASE 2024), MalOSS (NDSS 2021), DONAPI (USENIX 2024).
 - Ladisa 107 vectors → explicitly scoped to npm-consumer-detectable vectors.
 - Both core contributions emphasized: (1) unified single tool, (2) Layer 3 condition mutation.
+
+### v6: Layer 0 follow-up complete (2026-06-10)
+- dummy_dep_confusion (A2): `aws-sdk-client-s3` → BLOCK via namespace conflict with `@aws-sdk/client-s3`. E2E verified.
+- dummy_hijack (A3): SUSPECT via maintainer change. Integration test in `tests/layer0_dummy.rs` (7 tests). Note: CLI E2E requires a real package with a recent maintainer change; logic verified by test fixture.
+- `[dev-dependencies]` added (`chrono`, `serde_json`) for integration tests.
 
 ### v5: Coverage made a hard requirement (2026-06-08)
 - Added "Complete Attack-Vector Coverage (within defined scope)" as an explicit, mandatory design goal.
@@ -211,8 +216,8 @@ Covers: D1, D2, D3
 |---------|-------------|--------------|--------|
 | dummy_typosquat (`expres`) | Layer 0 | — | ✅ VERIFIED: BLOCK |
 | dummy_obfuscated | Layer 1 | L0 PASS | ✅ VERIFIED: BLOCK |
-| dummy_dep_confusion | Layer 0 | — | TODO |
-| dummy_hijack | Layer 0 | — | TODO |
+| dummy_dep_confusion (`aws-sdk-client-s3`) | Layer 0 | — | ✅ VERIFIED: BLOCK (namespace conflict with @aws-sdk/client-s3) |
+| dummy_hijack | Layer 0 | — | ✅ VERIFIED: SUSPECT (integration test; maintainer.rs + tests/layer0_dummy.rs) |
 | dummy_install_time | Layer 2 | L0-1 PASS | TODO |
 | dummy_import_time | Layer 2 | L0-1 PASS | TODO |
 | dummy_slow_exfil | Layer 2 | L0-1 PASS | TODO |
@@ -234,8 +239,8 @@ Covers: D1, D2, D3
 ## Task Checklist
 
 ### Layer 0 follow-up
-- [ ] Build & verify dummy_dep_confusion (A2)
-- [ ] Build & verify dummy_hijack (A3)
+- [x] Build & verify dummy_dep_confusion (A2)
+- [x] Build & verify dummy_hijack (A3)
 
 ### Layer 2
 - [ ] Docker base image (node:lts-alpine + strace + tcpdump)

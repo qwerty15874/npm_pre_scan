@@ -19,7 +19,17 @@
       "Bash(ssh -T git@github.com)",
       "Bash(grep -v '^\\\\s*$')",
       "WebFetch(domain:docs.npmjs.com)",
-      "WebFetch(domain:docs.rs)"
+      "WebFetch(domain:docs.rs)",
+      "Bash(nix-shell -p rustup --run \"rustup show\")",
+      "Bash(nix run *)",
+      "Bash(nix-shell -p cargo --run \"cargo --version\")",
+      "Bash(nix profile *)",
+      "Bash(nix-env -q)",
+      "Bash(/nix/store/z480b23kymbmrijrl49246mrzyphli15-cargo-1.95.0/bin/cargo *)",
+      "Bash(date -u -v-400d +\"%Y-%m-%dT%H:%M:%S+00:00\")",
+      "Bash(PATH=\"$GCC_BIN:/nix/store/z480b23kymbmrijrl49246mrzyphli15-cargo-1.95.0/bin:$PATH\" cargo test *)",
+      "Bash(/home/hpschkkim/문서/Dev/npm_pre_scan/target/debug/npm-pre-scan --no-color aws-sdk-client-s3)",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }
