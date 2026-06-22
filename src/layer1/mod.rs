@@ -1,6 +1,7 @@
 mod checks;
 mod tarball;
 mod version_diff;
+mod worm_signature;
 
 use crate::models::{score_findings, CheckResult, Finding, Verdict};
 use std::collections::HashMap;
@@ -40,6 +41,7 @@ fn collect_dir_findings(pkg_json: &Value, dir: &Path) -> Vec<Finding> {
     findings.extend(checks::check_suspicious_strings(dir));
     findings.extend(checks::check_network_imports(dir));
     findings.extend(checks::check_dynamic_require(dir));
+    findings.extend(worm_signature::check_worm_signature(dir));
     findings
 }
 

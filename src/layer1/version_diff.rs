@@ -89,6 +89,11 @@ pub(crate) fn diff_findings(
     )
     .unwrap();
     let re_env = Regex::new(r"process\.env\b").unwrap();
+    // Worm-class indicators (E1 — self-propagating worm via update)
+    let re_worm = Regex::new(
+        r"npm\s+publish\b|_authToken|NPM_TOKEN|webhook\.site|169\.254\.169\.254|trufflehog|shai.hulud",
+    )
+    .unwrap();
 
     let mut findings = Vec::new();
     for (file, latest_content) in latest_files {
@@ -144,6 +149,16 @@ pub(crate) fn diff_findings(
             findings.push(finding(
                 "SUSPECT",
                 &format!("Newly introduced process.env access in {} ({})", file, origin),
+                file,
+                prev_v,
+                latest_v,
+            ));
+        }
+
+        if re_worm.is_match(&added) {
+            findings.push(finding(
+                "BLOCK",
+                &format!("Newly introduced worm-class indicator in {} ({})", file, origin),
                 file,
                 prev_v,
                 latest_v,

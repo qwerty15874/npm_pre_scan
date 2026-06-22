@@ -6,17 +6,21 @@ use npm_pre_scan::models::Verdict;
 use npm_pre_scan::namespace::load_top_scoped_packages;
 use npm_pre_scan::registry::get_package_info;
 use npm_pre_scan::typosquat::load_top_packages;
-use npm_pre_scan::{run_layer0, run_layer1, run_layer1_local, CheckResult};
+use npm_pre_scan::{run_layer0, run_layer1, run_layer1_local, run_layer2_local, CheckResult};
 
 #[derive(Parser, Debug)]
-#[command(name = "npm-pre-scan", about = "npm supply-chain pre-scan (Layer 0 + 1)")]
+#[command(name = "npm-pre-scan", about = "npm supply-chain pre-scan (Layer 0 + 1 + 2 stub)\n\nExit codes: 0=PASS  1=SUSPECT  2=BLOCK  3=ERROR")]
 struct Cli {
-    /// npm package name(s) to check (skip when using --local)
+    /// npm package name(s) to check (skip when using --local or --layer2)
     packages: Vec<String>,
 
     /// Analyze a local package directory with Layer 1 only (no registry checks)
     #[arg(long, value_name = "DIR")]
     local: Option<PathBuf>,
+
+    /// Analyze a local package directory with Layer 2 dynamic analysis (requires Docker)
+    #[arg(long, value_name = "DIR")]
+    layer2: Option<PathBuf>,
 
     /// Output raw JSON
     #[arg(long)]
@@ -114,8 +118,34 @@ fn main() {
         std::process::exit(code);
     }
 
+    // --layer2 mode: Layer 2 dynamic analysis on a local directory (requires Docker)
+    if let Some(dir) = cli.layer2 {
+        let name = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("local-package")
+            .to_string();
+        eprintln!("Scanning local dir as Layer 2 (Docker): {} ({})", name, dir.display());
+        let result = run_layer2_local(&name, &dir);
+
+        if cli.json {
+            println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+        } else {
+            print_layer_result("Layer 2", &result, !cli.no_color);
+            println!();
+        }
+
+        let code = match result.verdict {
+            Verdict::Pass => 0,
+            Verdict::Suspect => 1,
+            Verdict::Block => 2,
+            Verdict::Error => 3,
+        };
+        std::process::exit(code);
+    }
+
     if cli.packages.is_empty() {
-        eprintln!("Error: provide package name(s) or --local <dir>");
+        eprintln!("Error: provide package name(s) or --local <dir> or --layer2 <dir>");
         std::process::exit(1);
     }
 

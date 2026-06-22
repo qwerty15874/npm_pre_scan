@@ -1,5 +1,5 @@
 # CLAUDE.md
-> Last updated: 2026-06-18
+> Last updated: 2026-06-22
 
 ---
 
@@ -54,7 +54,7 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
   package scanner. Declaring this boundary is itself part of the contribution.
 
 ### Coverage rule
-- Every IN-SCOPE vector (A1–D3 below) MUST map to at least one Layer.
+- Every IN-SCOPE vector (A1–E1 below) MUST map to at least one Layer.
 - No in-scope vector may be silently skipped. If a vector cannot be reliably detected,
   it must be explicitly documented as a known limitation (not omitted).
 - The early-exit optimization (Layer 0 BLOCK skips Layer 1) is a performance choice and
@@ -77,8 +77,10 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 | D1 | Time Bomb (date/time-gated) | condition | Layer 3 | dummy_timebomb | TODO |
 | D2 | Environment-triggered (CI evasion) | condition | Layer 3 | dummy_env_triggered | TODO |
 | D3 | Trigger-on-use (API-call-gated) | run-time | Layer 3 | dummy_api_triggered | TODO |
+| E1 | Self-propagating worm (Shai-Hulud) | install/import/run | Layer 1 (worm signature) + Layer 2/3 | dummy_shai_hulud | Layer 1 ✅ DONE / dynamic TODO |
 
 > A4 and B3 promoted from candidates to DONE (implemented and verified via integration tests).
+> E1 Layer 1 static detection done (worm_signature.rs); Layer 2/3 dynamic verification deferred.
 > Coverage is considered complete only when every non-candidate in-scope vector is VERIFIED.
 
 ---
@@ -101,6 +103,15 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 - Comparison targets: OSCAR (ASE 2024), MalOSS (NDSS 2021), DONAPI (USENIX 2024).
 - Ladisa 107 vectors → explicitly scoped to npm-consumer-detectable vectors.
 - Both core contributions emphasized: (1) unified single tool, (2) Layer 3 condition mutation.
+
+### v8: E1 Shai-Hulud worm defense added (2026-06-22)
+- **E1 Self-propagating worm** detection added: `src/layer1/worm_signature.rs` — three-category heuristic (self_propagation, credential_harvest, exfil_persistence) + SHA-256 IOC hashing vs `data/worm_iocs.txt` → BLOCK; aggregate `worm` BLOCK when ≥2 categories.
+- **Worm regex subset** added to `version_diff.rs` diff_findings for B3-style worm-via-update detection (worm carrier injected via legit-package update → BLOCK).
+- **Layer 2 Docker stub** scaffolded: `docker/Dockerfile`, `docker/run_layer2.sh`, `src/layer2/mod.rs` (graceful Error+note when Docker absent), `--layer2 <DIR>` flag in `main.rs`.
+- **On-disk dummy fixture** `dummy_packages/dummy_shai_hulud/{clean,infected}/` created; infected includes `bundle.js` (IOC-hash matched) and `.github/workflows/shai-hulud-workflow.yml` persistence IOC.
+- **Integration tests** `tests/layer1_worm.rs` (4 tests: E1 static BLOCK, self_propagation present, clean control, worm-via-update diff BLOCK). All 67 tests pass.
+- `sha2 = "0.10"` added to `[dependencies]` in Cargo.toml.
+- `pub mod layer2` + `run_layer2_local` re-exported from `lib.rs`.
 
 ### v7: Layer 0/1 coverage complete (2026-06-18)
 - **A4 Combosquatting** detection added: `src/combosquat.rs` — popular-token + suspicious-affix heuristic → SUSPECT. Wired into `run_layer0` as Check 3 (name-based, no registry call).
@@ -142,8 +153,9 @@ data/top_scoped_packages.txt — embedded at compile time
 
 Binary:
   npm-pre-scan [--json] [--no-color] <pkg> [<pkg>...]
-  npm-pre-scan --local <dir>   (Layer 1 only on local dir)
-  exit 0=PASS  1=SUSPECT  2=BLOCK
+  npm-pre-scan --local <dir>    (Layer 1 only on local dir)
+  npm-pre-scan --layer2 <dir>   (Layer 2 dynamic analysis — requires Docker)
+  exit 0=PASS  1=SUSPECT  2=BLOCK  3=ERROR
 
 Severity rules:
   typosquat distance=1 (name ≥5 chars)               → BLOCK
@@ -162,10 +174,13 @@ Severity rules:
 ### Layer 1 — DONE
 ```
 src/layer1/
-  mod.rs          run_layer1(name, info), run_layer1_local(name, dir), run_version_diff_local(prev, latest)
-  tarball.rs      get_tarball_url(), download_and_extract()
-  checks.rs       5 static checks
-  version_diff.rs check_version_diff(info), diff_findings(prev_files, latest_files, …)
+  mod.rs            run_layer1(name, info), run_layer1_local(name, dir), run_version_diff_local(prev, latest)
+  tarball.rs        get_tarball_url(), download_and_extract()
+  checks.rs         5 static checks
+  version_diff.rs   check_version_diff(info), diff_findings(prev_files, latest_files, …)
+  worm_signature.rs check_worm_signature(dir) — E1 three-category heuristic + SHA-256 IOC hashing
+
+data/worm_iocs.txt — known-IOC SHA-256 list, embedded at compile time
 
 Checks:
   install_script      scripts.pre/install/postinstall      → SUSPECT
@@ -177,20 +192,33 @@ Checks:
   dynamic_require     require(variable)                    → SUSPECT
   version_diff        newly-introduced eval(Buffer.from)/sensitive → BLOCK
                       newly-introduced eval/network/process.env    → SUSPECT
+                      newly-introduced worm indicators             → BLOCK
+  worm_signature      self_propagation (npm publish/_authToken)    → BLOCK
+                      credential_harvest (TruffleHog/IMDS/creds)  → BLOCK
+                      exfil_persistence (webhook.site/GH-API/wf)  → BLOCK
+                      ioc_hash (SHA-256 match vs worm_iocs.txt)    → BLOCK
+                      worm aggregate (≥2 categories)               → BLOCK
 
 Scoring: BLOCK=50, SUSPECT=15, INFO=2 weighted sum, capped at 100
 Pipeline: Layer 0 BLOCK → Layer 1 skipped
 Local test: npm-pre-scan --local <dir>
 ```
 
-### Layer 2 — TODO
+### Layer 2 — STUB (Docker scaffolding done, full dynamic verification TODO)
 ```
 Environment: Docker container (network-isolated)
 Execution:
   Step 1. npm install → observe install-time behavior
   Step 2. node -e "require('pkg')" → observe import-time behavior
 Monitoring: strace (file syscalls), tcpdump (network), DNS logs, child_process detection
-Covers: B1 (dynamic), C1, C2, C3
+Covers: B1 (dynamic), C1, C2, C3, E1 (worm egress)
+
+Files:
+  docker/Dockerfile        — node:lts-alpine + strace + tcpdump
+  docker/run_layer2.sh     — monitoring script, writes /out/layer2.json
+  src/layer2/mod.rs        — run_layer2_local(name, dir) → CheckResult
+                             (graceful Error + note when Docker absent)
+  CLI: npm-pre-scan --layer2 <dir>   exit 0/1/2/3
 ```
 
 ### Layer 3 — TODO (★ core contribution)
@@ -230,6 +258,8 @@ Covers: D1, D2, D3
 | `lodash-utils-fix` (name test) | Layer 0 (A4) | — | ✅ VERIFIED: SUSPECT (combosquat; tests/layer0_dummy.rs) |
 | dummy_obfuscated | Layer 1 (B2) | L0 PASS | ✅ VERIFIED: BLOCK (on-disk fixture; tests/layer1_dummy.rs) |
 | dummy_malicious_update | Layer 1 (B3) | L0-1 PASS | ✅ VERIFIED: BLOCK diff (on-disk fixture; tests/layer1_dummy.rs) |
+| dummy_shai_hulud (infected) | Layer 1 (E1) | L0 PASS | ✅ VERIFIED: BLOCK (worm_signature; tests/layer1_worm.rs) |
+| dummy_shai_hulud (clean) | Layer 1 (E1) | L0 PASS | ✅ VERIFIED: PASS control |
 | dummy_install_time | Layer 2 | L0-1 PASS | TODO |
 | dummy_import_time | Layer 2 | L0-1 PASS | TODO |
 | dummy_slow_exfil | Layer 2 | L0-1 PASS | TODO |
