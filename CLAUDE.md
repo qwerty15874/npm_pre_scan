@@ -1,5 +1,5 @@
 # CLAUDE.md
-> Last updated: 2026-06-22
+> Last updated: 2026-06-22 (v9)
 
 ---
 
@@ -10,7 +10,7 @@ Pipeline: package name → Layer 0 → Layer 1 → Layer 2 → Layer 3 → risk 
 
 Layer 0  [████████████████████] DONE   Metadata check        (no execution, Rust)
 Layer 1  [████████████████████] DONE   Static analysis       (no execution, Rust)
-Layer 2  [░░░░░░░░░░░░░░░░░░░░] TODO   Dynamic — simple run  (Docker)
+Layer 2  [████████████░░░░░░░░] PARTIAL Dynamic — logic done / live-verify pending Docker
 Layer 3  [░░░░░░░░░░░░░░░░░░░░] TODO   Dynamic — condition mutation (Docker)
 Scoring  [░░░░░░░░░░░░░░░░░░░░] TODO   Aggregate risk score
 ```
@@ -68,12 +68,12 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 | A2 | Dependency Confusion | metadata | Layer 0 | dummy_dep_confusion | ✅ DONE |
 | A3 | Account Hijacking (maintainer change) | metadata | Layer 0 | dummy_hijack | ✅ DONE |
 | A4 | Combosquatting | metadata | Layer 0 | `lodash-utils-fix` (name test) | ✅ DONE |
-| B1 | Install-time script (pre/postinstall) | install | Layer 1+2 | dummy_install_time | TODO |
+| B1 | Install-time script (pre/postinstall) | install | Layer 1+2 | dummy_install_time | Layer 2 logic done / live-verify pending Docker |
 | B2 | Obfuscation (eval+base64, hex) | install/import | Layer 1 | dummy_obfuscated | ✅ DONE |
 | B3 | Malicious version update (legit pkg subversion) | install/import | Layer 1 (version diff) | dummy_malicious_update | ✅ DONE |
-| C1 | Import-time execution (top-level index.js) | import | Layer 2 | dummy_import_time | TODO |
-| C2 | Slow exfiltration (DNS tunneling) | import/run | Layer 2 | dummy_slow_exfil | TODO |
-| C3 | Hidden binary (.node C extension) | import/run | Layer 2 | dummy_binary | TODO |
+| C1 | Import-time execution (top-level index.js) | import | Layer 2 | dummy_import_time | Layer 2 logic done / live-verify pending Docker |
+| C2 | Slow exfiltration (DNS tunneling) | import/run | Layer 2 | dummy_slow_exfil | Layer 2 logic done / live-verify pending Docker |
+| C3 | Hidden binary (.node C extension) | import/run | Layer 2 | dummy_binary | Layer 2 logic done / live-verify pending Docker |
 | D1 | Time Bomb (date/time-gated) | condition | Layer 3 | dummy_timebomb | TODO |
 | D2 | Environment-triggered (CI evasion) | condition | Layer 3 | dummy_env_triggered | TODO |
 | D3 | Trigger-on-use (API-call-gated) | run-time | Layer 3 | dummy_api_triggered | TODO |
@@ -103,6 +103,18 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 - Comparison targets: OSCAR (ASE 2024), MalOSS (NDSS 2021), DONAPI (USENIX 2024).
 - Ladisa 107 vectors → explicitly scoped to npm-consumer-detectable vectors.
 - Both core contributions emphasized: (1) unified single tool, (2) Layer 3 condition mutation.
+
+### v9: Layer 2 dynamic analysis logic complete (2026-06-22)
+- **Layer 2 detection logic implemented** in pure Rust (no Docker required for testing):
+  - `src/layer2/profile.rs` — `Layer2Profile` struct + `parse_strace` / `parse_dns` pure parsers (execve, openat, connect sockaddr, dnsmasq qnames).
+  - `src/layer2/classify.rs` — `classify(&Layer2Profile) -> Vec<Finding>` covering E1 worm egress (BLOCK), B1 install child process (SUSPECT/BLOCK), sensitive file reads (BLOCK), C1 import-phase side effects (SUSPECT/BLOCK), C2 DNS tunneling (SUSPECT/BLOCK), C3 native addon (SUSPECT).
+  - `src/layer2/mod.rs` — replaced inline event-mapping with parse_* → classify pipeline; kept existing docker-build/run/tempdir plumbing and error_result graceful-degradation.
+- **Docker entrypoint reworked** (`docker/run_layer2.sh`): dnsmasq sinkhole (--log-queries, address=/#/127.0.0.1, no upstream) + strace for install and import phases; leaves raw logs in /out for Rust parser. `docker/Dockerfile`: added `dnsmasq` to apk add.
+- **Four dummy packages** (payload-free, local-only): `dummy_install_time` (B1), `dummy_import_time` (C1), `dummy_slow_exfil` (C2), `dummy_binary` (C3).
+- **Fixture logs** hand-crafted in `tests/fixtures/layer2/` (install_time_strace, import_time_strace, slow_exfil_dns, binary_strace, worm_egress_dns, worm_egress_strace, benign control).
+- **Integration tests** `tests/layer2_classify.rs` (8 offline tests, all pass without Docker) + `tests/layer2_dynamic.rs` (5 Docker-gated tests, all #[ignore]d).
+- **Known limitation:** Layer 2 classification logic verified by fixtures; live container verification of the dummies (B1/C1/C2/C3) is pending a Docker-capable environment.
+- All 91 tests pass (71 unit + 8 layer0_dummy + 4 layer1_dummy + 4 layer1_worm + 8 layer2_classify + 5 ignored).
 
 ### v8: E1 Shai-Hulud worm defense added (2026-06-22)
 - **E1 Self-propagating worm** detection added: `src/layer1/worm_signature.rs` — three-category heuristic (self_propagation, credential_harvest, exfil_persistence) + SHA-256 IOC hashing vs `data/worm_iocs.txt` → BLOCK; aggregate `worm` BLOCK when ≥2 categories.
@@ -204,21 +216,39 @@ Pipeline: Layer 0 BLOCK → Layer 1 skipped
 Local test: npm-pre-scan --local <dir>
 ```
 
-### Layer 2 — STUB (Docker scaffolding done, full dynamic verification TODO)
+### Layer 2 — LOGIC DONE (live-verify pending Docker)
 ```
-Environment: Docker container (network-isolated)
-Execution:
-  Step 1. npm install → observe install-time behavior
-  Step 2. node -e "require('pkg')" → observe import-time behavior
-Monitoring: strace (file syscalls), tcpdump (network), DNS logs, child_process detection
-Covers: B1 (dynamic), C1, C2, C3, E1 (worm egress)
+Architecture: dumb container (raw logs only) + smart Rust (parse + classify)
+  docker/run_layer2.sh   → dnsmasq sinkhole + strace install + strace import → raw logs in /out
+  src/layer2/profile.rs  → parse_strace(&str) + parse_dns(&str) → Layer2Profile  [pure, tested]
+  src/layer2/classify.rs → classify(&Layer2Profile) → Vec<Finding>               [pure, tested]
+  src/layer2/mod.rs      → run_layer2_local(): docker run → read logs → parse → classify
+
+Network model: --network=none + in-container dnsmasq sinkhole (address=/#/127.0.0.1, no upstream).
+Every DNS lookup is logged with its qname; connect() destinations captured by strace.
+
+Detection rules (classify):
+  E1 worm egress       DNS/connect to registry.npmjs.org, api.github.com, webhook.site, 169.254.169.254 → BLOCK
+  B1 install script    child process (unexpected) during install phase; +network/sensitive → BLOCK     → SUSPECT/BLOCK
+  sensitive file read  /etc/passwd, /etc/shadow, ~/.ssh, .npmrc, .aws/credentials, .git-credentials   → BLOCK
+  C1 import side effect network/process/file-write activity during import phase                        → SUSPECT/BLOCK
+  C2 DNS tunneling     many distinct qnames, or long base32/hex-looking labels                         → SUSPECT/BLOCK
+  C3 native addon      *.node file opened/loaded at import                                             → SUSPECT
 
 Files:
-  docker/Dockerfile        — node:lts-alpine + strace + tcpdump
-  docker/run_layer2.sh     — monitoring script, writes /out/layer2.json
-  src/layer2/mod.rs        — run_layer2_local(name, dir) → CheckResult
-                             (graceful Error + note when Docker absent)
+  docker/Dockerfile           — node:lts-alpine + strace + tcpdump + dnsmasq
+  docker/run_layer2.sh        — raw-log capture (install + import strace, dnsmasq dns.log)
+  src/layer2/profile.rs       — parse_strace, parse_dns → Layer2Profile (serde-serializable for Layer 3)
+  src/layer2/classify.rs      — classify(&Layer2Profile) → Vec<Finding>
+  src/layer2/mod.rs           — run_layer2_local(name, dir) → CheckResult
+                                (graceful Error + note when Docker absent)
+  tests/fixtures/layer2/      — recorded fixture logs per scenario
+  tests/layer2_classify.rs    — 8 offline tests (all pass without Docker)
+  tests/layer2_dynamic.rs     — 5 Docker-gated tests (#[ignore]d)
   CLI: npm-pre-scan --layer2 <dir>   exit 0/1/2/3
+
+Known limitation: classification logic verified by fixtures; live container verification
+of dummy packages (B1/C1/C2/C3) is pending a Docker-capable environment.
 ```
 
 ### Layer 3 — TODO (★ core contribution)
@@ -260,10 +290,10 @@ Covers: D1, D2, D3
 | dummy_malicious_update | Layer 1 (B3) | L0-1 PASS | ✅ VERIFIED: BLOCK diff (on-disk fixture; tests/layer1_dummy.rs) |
 | dummy_shai_hulud (infected) | Layer 1 (E1) | L0 PASS | ✅ VERIFIED: BLOCK (worm_signature; tests/layer1_worm.rs) |
 | dummy_shai_hulud (clean) | Layer 1 (E1) | L0 PASS | ✅ VERIFIED: PASS control |
-| dummy_install_time | Layer 2 | L0-1 PASS | TODO |
-| dummy_import_time | Layer 2 | L0-1 PASS | TODO |
-| dummy_slow_exfil | Layer 2 | L0-1 PASS | TODO |
-| dummy_binary | Layer 2 | L0-1 PASS | TODO |
+| dummy_install_time | Layer 2 (B1) | L0-1 PASS | Logic verified by fixture (tests/layer2_classify.rs); live Docker run pending |
+| dummy_import_time | Layer 2 (C1) | L0-1 PASS | Logic verified by fixture (tests/layer2_classify.rs); live Docker run pending |
+| dummy_slow_exfil | Layer 2 (C2) | L0-1 PASS | Logic verified by fixture (tests/layer2_classify.rs); live Docker run pending |
+| dummy_binary | Layer 2 (C3) | L0-1 PASS | Logic verified by fixture (tests/layer2_classify.rs); live Docker run pending |
 | dummy_timebomb | Layer 3 | L0-2 PASS | TODO |
 | dummy_env_triggered | Layer 3 | L0-2 PASS | TODO |
 | dummy_api_triggered | Layer 3 | L0-2 PASS | TODO |
@@ -289,12 +319,15 @@ Covers: D1, D2, D3
 - [x] Create integration tests (tests/layer0_dummy.rs, tests/layer1_dummy.rs)
 
 ### Layer 2
-- [ ] Docker base image (node:lts-alpine + strace + tcpdump)
-- [ ] Network isolation setup
-- [ ] Auto npm install + strace integration
-- [ ] Auto node -e "require()" + monitoring
-- [ ] Log parser (syscall → structured events)
-- [ ] Verify: dummy_install_time, dummy_import_time, dummy_slow_exfil, dummy_binary
+- [x] Docker base image (node:lts-alpine + strace + tcpdump + dnsmasq)
+- [x] Network isolation setup (--network=none + dnsmasq sinkhole)
+- [x] Auto npm install + strace integration (strace_install.log)
+- [x] Auto node -e "require()" + monitoring (strace_import.log, dns.log)
+- [x] Log parser (profile.rs: parse_strace, parse_dns → Layer2Profile)
+- [x] Classification logic (classify.rs: B1/C1/C2/C3/E1 detection rules)
+- [x] Offline fixture tests (tests/layer2_classify.rs — 8 tests pass)
+- [x] Dummy packages created: dummy_install_time, dummy_import_time, dummy_slow_exfil, dummy_binary
+- [ ] Live Docker verification: run dummies on a Docker-capable machine (deferred — known limitation)
 
 ### Layer 3 (core contribution)
 - [ ] libfaketime container integration

@@ -1,9 +1,13 @@
-// Layer 2: Dynamic analysis stub (Docker-based).
+// Layer 2: Dynamic analysis (Docker-based).
 //
-// Scaffolds worm-egress monitoring via Docker. Full dummy-package verification
-// under Docker is deferred (noted as known limitation in CLAUDE.md).
+// Architecture: the container captures RAW logs only; all parsing + classification
+// lives in pure Rust functions (profile.rs, classify.rs) that are unit-testable
+// offline with recorded log fixtures.
 //
 // When Docker is absent, returns Verdict::Error with a descriptive note — no panic.
+
+pub mod classify;
+pub mod profile;
 
 use crate::models::{CheckResult, Finding, Verdict};
 use serde_json::{Map, Value};
@@ -28,6 +32,7 @@ fn error_result(package_name: &str, note: &str) -> CheckResult {
     }
 }
 
+/// Build a minimal Finding (used for the no-Docker path).
 fn finding(severity: &str, message: &str) -> Finding {
     let mut m = Map::new();
     m.insert("check".into(), Value::String("layer2_dynamic".into()));
@@ -39,11 +44,13 @@ fn finding(severity: &str, message: &str) -> Finding {
 /// Run Layer 2 dynamic analysis on a local package directory.
 ///
 /// Requires Docker. If Docker is not on PATH, returns `Verdict::Error` with a
-/// "Docker required for Layer 2" note (graceful stub — no panic).
+/// "Docker required for Layer 2" note (graceful degradation — no panic).
 ///
 /// Otherwise builds the monitoring image from `docker/Dockerfile`, mounts `dir`
 /// as `/pkg` (read-only) and a temp dir as `/out`, runs the container, reads
-/// `/out/layer2.json`, and maps worm-egress events to Findings.
+/// the raw strace + dns logs from `/out`, parses them into a `Layer2Profile`
+/// via `profile::parse_strace`/`parse_dns`, classifies them into `Vec<Finding>`
+/// via `classify::classify`, and derives a verdict.
 pub fn run_layer2_local(name: &str, dir: &Path) -> CheckResult {
     if !docker_available() {
         return error_result(name, "Docker required for Layer 2 — install Docker to enable dynamic analysis");
@@ -84,6 +91,7 @@ pub fn run_layer2_local(name: &str, dir: &Path) -> CheckResult {
     };
 
     // Run the container: mount pkg read-only, out writable, no network
+    // (dnsmasq inside the container handles DNS — loopback only)
     let run_status = Command::new("docker")
         .args([
             "run",
@@ -111,30 +119,28 @@ pub fn run_layer2_local(name: &str, dir: &Path) -> CheckResult {
         }
     }
 
-    // Read the output JSON
-    let out_json_path = out_dir.path().join("layer2.json");
-    let out_json: Value = match std::fs::read_to_string(&out_json_path) {
-        Ok(s) => serde_json::from_str(&s).unwrap_or(Value::Null),
-        Err(e) => {
-            return error_result(name, &format!("Failed to read layer2.json: {}", e));
-        }
+    // Read raw logs from /out
+    let read_log = |filename: &str| -> String {
+        std::fs::read_to_string(out_dir.path().join(filename)).unwrap_or_default()
     };
 
-    // Map egress events to findings
+    let strace_install = read_log("strace_install.log");
+    let strace_import = read_log("strace_import.log");
+    let dns_log = read_log("dns.log");
+
+    // Parse logs into profiles
+    let mut install_profile = profile::parse_strace("install", &strace_install);
+    let mut import_profile = profile::parse_strace("import", &strace_import);
+
+    // DNS queries are merged into both profiles (dnsmasq captures all phases)
+    let dns_queries = profile::parse_dns(&dns_log);
+    install_profile.dns_queries.extend(dns_queries.iter().cloned());
+    import_profile.dns_queries.extend(dns_queries);
+
+    // Classify both profiles
     let mut findings: Vec<Finding> = Vec::new();
-    if let Some(events) = out_json.get("events").and_then(|v| v.as_array()) {
-        for event in events {
-            let severity = event
-                .get("severity")
-                .and_then(|v| v.as_str())
-                .unwrap_or("SUSPECT");
-            let message = event
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Unknown dynamic event");
-            findings.push(finding(severity, message));
-        }
-    }
+    findings.extend(classify::classify(&install_profile));
+    findings.extend(classify::classify(&import_profile));
 
     // Derive verdict from findings
     let verdict = if findings
@@ -162,7 +168,7 @@ pub fn run_layer2_local(name: &str, dir: &Path) -> CheckResult {
 }
 
 /// Locate the `docker/` directory relative to the project root.
-/// Searches from the current working directory upward (up to 3 levels).
+/// Searches from the current working directory upward (up to 4 levels).
 fn locate_docker_dir() -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
     for ancestor in cwd.ancestors().take(4) {
@@ -172,4 +178,10 @@ fn locate_docker_dir() -> Option<String> {
         }
     }
     None
+}
+
+// suppress unused-import warning for the no-Docker build
+#[allow(dead_code)]
+fn _use_finding() -> Finding {
+    finding("INFO", "unused")
 }

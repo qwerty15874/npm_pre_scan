@@ -1,56 +1,70 @@
 #!/bin/sh
 # Layer 2 dynamic analysis entrypoint.
-# Runs inside a network-isolated Docker container with /pkg mounted read-only
-# and /out mounted writable for output.
+# Runs inside a network-isolated Docker container (--network=none) with:
+#   /pkg  mounted read-only  — package under analysis
+#   /out  mounted writable   — raw log output for the Rust parser
 #
-# Monitors worm egress: npm registry PUT/publish, api.github.com, webhook.site,
-# cloud IMDS (169.254.169.254), and suspicious DNS lookups.
-# Writes structured JSON to /out/layer2.json.
+# Produces raw logs only; all parsing and classification happens in Rust.
+# Output files:
+#   /out/strace_install.log  — strace of npm install phase
+#   /out/strace_import.log   — strace of node require() phase
+#   /out/dns.log             — dnsmasq query log (all phases)
+#
+# Network model: --network=none + in-container dnsmasq sinkhole.
+# dnsmasq binds to 127.0.0.1, resolves everything to loopback (address=/#/127.0.0.1),
+# logs all queries. /etc/resolv.conf points to 127.0.0.1.
+# Nothing leaves the host; every DNS query name is still logged.
 
 set -e
 
 PKG_DIR="${PKG_DIR:-/pkg}"
-OUT_FILE="${OUT_DIR:-/out}/layer2.json"
-CAPTURE_FILE="/tmp/layer2_capture.pcap"
-STRACE_LOG="/tmp/layer2_strace.log"
+OUT_DIR="${OUT_DIR:-/out}"
 
-mkdir -p "$(dirname "$OUT_FILE")"
+mkdir -p "$OUT_DIR"
 
 echo "Layer 2: starting dynamic analysis of $PKG_DIR" >&2
 
-# Step 1: Start tcpdump in background
-tcpdump -w "$CAPTURE_FILE" -i any &
-TCPDUMP_PID=$!
+# Step 1: Start dnsmasq as DNS sinkhole (log all queries, resolve everything to loopback)
+dnsmasq \
+    --no-daemon \
+    --listen-address=127.0.0.1 \
+    --bind-interfaces \
+    --address=/#/127.0.0.1 \
+    --no-resolv \
+    --log-queries \
+    --log-facility="$OUT_DIR/dns.log" &
+DNSMASQ_PID=$!
 
-# Step 2: npm install with strace (captures file and network syscalls)
-cd "$PKG_DIR"
-strace -f -e trace=network,file -o "$STRACE_LOG" npm install --ignore-scripts=false 2>&1 || true
+# Point resolver at dnsmasq
+echo "nameserver 127.0.0.1" > /etc/resolv.conf
 
-# Step 3: Import-time execution
-strace -f -e trace=network,file -o "${STRACE_LOG}.import" node -e "try { require('$PKG_DIR'); } catch(e) {}" 2>&1 || true
-
-# Step 4: Stop tcpdump
-kill "$TCPDUMP_PID" 2>/dev/null || true
+# Give dnsmasq a moment to start
 sleep 1
 
-# Step 5: Parse captures for worm IOC egress
-EVENTS="[]"
+# Step 2: Start tcpdump on loopback in background (supplemental capture)
+tcpdump -w "$OUT_DIR/capture.pcap" -i lo 2>/dev/null &
+TCPDUMP_PID=$!
 
-# Check strace for suspicious network destinations
-for IOC_PATTERN in "registry.npmjs.org" "api.github.com" "webhook.site" "169.254.169.254"; do
-    if grep -q "$IOC_PATTERN" "$STRACE_LOG" 2>/dev/null || \
-       grep -q "$IOC_PATTERN" "${STRACE_LOG}.import" 2>/dev/null; then
-        EVENTS=$(printf '%s' "$EVENTS" | sed "s/\[\]/[{\"type\":\"egress\",\"destination\":\"$IOC_PATTERN\",\"severity\":\"BLOCK\",\"message\":\"Worm egress detected: $IOC_PATTERN\"}]/")
-    fi
-done
+# Step 3: npm install under strace (install phase)
+cd "$PKG_DIR"
+strace -f \
+    -e trace=execve,openat,connect \
+    -o "$OUT_DIR/strace_install.log" \
+    npm install --ignore-scripts=false 2>&1 || true
 
-# Write structured JSON output
-cat > "$OUT_FILE" <<EOF
-{
-  "layer": 2,
-  "package": "$PKG_DIR",
-  "events": $EVENTS
-}
-EOF
+echo "Layer 2: install phase complete" >&2
 
-echo "Layer 2: analysis complete, results at $OUT_FILE" >&2
+# Step 4: node require() under strace (import phase)
+strace -f \
+    -e trace=execve,openat,connect \
+    -o "$OUT_DIR/strace_import.log" \
+    node -e "try { require('$PKG_DIR'); } catch(e) { process.stderr.write('require error: ' + e.message + '\n'); }" 2>&1 || true
+
+echo "Layer 2: import phase complete" >&2
+
+# Step 5: Stop background processes
+kill "$TCPDUMP_PID" 2>/dev/null || true
+kill "$DNSMASQ_PID" 2>/dev/null || true
+sleep 1
+
+echo "Layer 2: analysis complete, logs in $OUT_DIR" >&2

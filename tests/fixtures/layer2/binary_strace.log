@@ -1,0 +1,4 @@
+3001  execve("/usr/local/bin/node", ["node", "-e", "try { require('/pkg'); } catch(e) {}"], 0x0) = 0
+3001  openat(AT_FDCWD, "/pkg/index.js", O_RDONLY) = 3
+3001  openat(AT_FDCWD, "/pkg/package.json", O_RDONLY) = 4
+3001  openat(AT_FDCWD, "/pkg/build/addon.node", O_RDONLY) = 5

@@ -1,0 +1,4 @@
+2001  execve("/usr/local/bin/node", ["node", "-e", "try { require('/pkg'); } catch(e) {}"], 0x0) = 0
+2001  openat(AT_FDCWD, "/pkg/index.js", O_RDONLY) = 3
+2001  openat(AT_FDCWD, "/pkg/package.json", O_RDONLY) = 4
+connect(6, {sa_family=AF_INET, sin_addr="127.0.0.1", sin_port=htons(80)}, 16) = -1 ECONNREFUSED
