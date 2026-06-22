@@ -1,5 +1,6 @@
 pub mod age_check;
 pub mod checker;
+pub mod combosquat;
 pub mod layer1;
 pub mod maintainer;
 pub mod models;

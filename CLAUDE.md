@@ -1,5 +1,5 @@
 # CLAUDE.md
-> Last updated: 2026-06-08
+> Last updated: 2026-06-18
 
 ---
 
@@ -67,10 +67,10 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 | A1 | Typosquatting | metadata | Layer 0 | dummy_typosquat | ✅ DONE |
 | A2 | Dependency Confusion | metadata | Layer 0 | dummy_dep_confusion | ✅ DONE |
 | A3 | Account Hijacking (maintainer change) | metadata | Layer 0 | dummy_hijack | ✅ DONE |
-| A4 | Combosquatting | metadata | Layer 0 | dummy_combosquat | TODO (candidate) |
+| A4 | Combosquatting | metadata | Layer 0 | `lodash-utils-fix` (name test) | ✅ DONE |
 | B1 | Install-time script (pre/postinstall) | install | Layer 1+2 | dummy_install_time | TODO |
 | B2 | Obfuscation (eval+base64, hex) | install/import | Layer 1 | dummy_obfuscated | ✅ DONE |
-| B3 | Malicious version update (legit pkg subversion) | install/import | Layer 1 (version diff) | dummy_malicious_update | TODO (candidate) |
+| B3 | Malicious version update (legit pkg subversion) | install/import | Layer 1 (version diff) | dummy_malicious_update | ✅ DONE |
 | C1 | Import-time execution (top-level index.js) | import | Layer 2 | dummy_import_time | TODO |
 | C2 | Slow exfiltration (DNS tunneling) | import/run | Layer 2 | dummy_slow_exfil | TODO |
 | C3 | Hidden binary (.node C extension) | import/run | Layer 2 | dummy_binary | TODO |
@@ -78,7 +78,7 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 | D2 | Environment-triggered (CI evasion) | condition | Layer 3 | dummy_env_triggered | TODO |
 | D3 | Trigger-on-use (API-call-gated) | run-time | Layer 3 | dummy_api_triggered | TODO |
 
-> A4, B3 are candidates — confirm based on implementation cost.
+> A4 and B3 promoted from candidates to DONE (implemented and verified via integration tests).
 > Coverage is considered complete only when every non-candidate in-scope vector is VERIFIED.
 
 ---
@@ -101,6 +101,14 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 - Comparison targets: OSCAR (ASE 2024), MalOSS (NDSS 2021), DONAPI (USENIX 2024).
 - Ladisa 107 vectors → explicitly scoped to npm-consumer-detectable vectors.
 - Both core contributions emphasized: (1) unified single tool, (2) Layer 3 condition mutation.
+
+### v7: Layer 0/1 coverage complete (2026-06-18)
+- **A4 Combosquatting** detection added: `src/combosquat.rs` — popular-token + suspicious-affix heuristic → SUSPECT. Wired into `run_layer0` as Check 3 (name-based, no registry call).
+- **B3 Malicious version update** verification seam added: `diff_findings()` extracted from `version_diff.rs`; `run_version_diff_local(prev, latest)` added to `layer1/mod.rs` for network-free testing.
+- **On-disk dummy fixtures** created: `dummy_packages/dummy_obfuscated/` (B2) and `dummy_packages/dummy_malicious_update/{prev,latest}/` (B3).
+- **Integration tests** created: `tests/layer0_dummy.rs` (8 tests: A1, A2, A4, controls) and `tests/layer1_dummy.rs` (4 tests: B2, B3). All 57 tests pass.
+- `reqwest` switched from OpenSSL to `rustls-tls` backend (build portability).
+- A4 and B3 promoted from candidates to DONE in coverage matrix.
 
 ### v6: Layer 0 follow-up complete (2026-06-10)
 - dummy_dep_confusion (A2): `aws-sdk-client-s3` → BLOCK via namespace conflict with `@aws-sdk/client-s3`. E2E verified.
@@ -125,6 +133,7 @@ src/
   maintainer.rs   first-version vs latest-version maintainer set comparison
   signatures.rs   registry ECDSA-P256 signature verification (npm audit signatures)
   namespace.rs    unscoped name vs top_scoped_packages.txt (94 scoped pkgs)
+  combosquat.rs   popular-token + suspicious-affix heuristic (A4)
   models.rs       Verdict enum, Finding type, CheckResult struct
   main.rs         CLI: npm-pre-scan [--json] [--no-color] <pkg> [<pkg>...]
 
@@ -137,25 +146,26 @@ Binary:
   exit 0=PASS  1=SUSPECT  2=BLOCK
 
 Severity rules:
-  typosquat distance=1 (name ≥5 chars)      → BLOCK
-  typosquat distance=1 (name <5 chars)       → SUSPECT
-  typosquat distance=2                       → SUSPECT
-  namespace conflict                         → BLOCK
-  age<7d + spike                             → SUSPECT
-  maintainer change                          → SUSPECT
-  signature missing                          → SUSPECT
-  signature invalid / no valid key           → BLOCK
-  (any BLOCK present)                        → verdict BLOCK
-  (any SUSPECT, no BLOCK)                    → verdict SUSPECT
+  typosquat distance=1 (name ≥5 chars)               → BLOCK
+  typosquat distance=1 (name <5 chars)               → SUSPECT
+  typosquat distance=2                               → SUSPECT
+  namespace conflict                                 → BLOCK
+  combosquat (popular token + suspicious affix)      → SUSPECT
+  age<7d + spike                                     → SUSPECT
+  maintainer change                                  → SUSPECT
+  signature missing                                  → SUSPECT
+  signature invalid / no valid key                   → BLOCK
+  (any BLOCK present)                                → verdict BLOCK
+  (any SUSPECT, no BLOCK)                            → verdict SUSPECT
 ```
 
 ### Layer 1 — DONE
 ```
 src/layer1/
-  mod.rs          run_layer1(name, info), run_layer1_local(name, dir)
+  mod.rs          run_layer1(name, info), run_layer1_local(name, dir), run_version_diff_local(prev, latest)
   tarball.rs      get_tarball_url(), download_and_extract()
   checks.rs       5 static checks
-  version_diff.rs check_version_diff(info) — prev vs latest tarball line-diff
+  version_diff.rs check_version_diff(info), diff_findings(prev_files, latest_files, …)
 
 Checks:
   install_script      scripts.pre/install/postinstall      → SUSPECT
@@ -214,10 +224,12 @@ Covers: D1, D2, D3
 
 | Package | Target layer | Prior layers | Status |
 |---------|-------------|--------------|--------|
-| dummy_typosquat (`expres`) | Layer 0 | — | ✅ VERIFIED: BLOCK |
-| dummy_obfuscated | Layer 1 | L0 PASS | ✅ VERIFIED: BLOCK |
-| dummy_dep_confusion (`aws-sdk-client-s3`) | Layer 0 | — | ✅ VERIFIED: BLOCK (namespace conflict with @aws-sdk/client-s3) |
-| dummy_hijack | Layer 0 | — | ✅ VERIFIED: SUSPECT (integration test; maintainer.rs + tests/layer0_dummy.rs) |
+| dummy_typosquat (`expres`) | Layer 0 (A1) | — | ✅ VERIFIED: BLOCK |
+| dummy_dep_confusion (`aws-sdk-client-s3`) | Layer 0 (A2) | — | ✅ VERIFIED: BLOCK (namespace conflict with @aws-sdk/client-s3) |
+| dummy_hijack | Layer 0 (A3) | — | ✅ VERIFIED: SUSPECT (integration test; maintainer.rs + tests/layer0_dummy.rs) |
+| `lodash-utils-fix` (name test) | Layer 0 (A4) | — | ✅ VERIFIED: SUSPECT (combosquat; tests/layer0_dummy.rs) |
+| dummy_obfuscated | Layer 1 (B2) | L0 PASS | ✅ VERIFIED: BLOCK (on-disk fixture; tests/layer1_dummy.rs) |
+| dummy_malicious_update | Layer 1 (B3) | L0-1 PASS | ✅ VERIFIED: BLOCK diff (on-disk fixture; tests/layer1_dummy.rs) |
 | dummy_install_time | Layer 2 | L0-1 PASS | TODO |
 | dummy_import_time | Layer 2 | L0-1 PASS | TODO |
 | dummy_slow_exfil | Layer 2 | L0-1 PASS | TODO |
@@ -241,6 +253,10 @@ Covers: D1, D2, D3
 ### Layer 0 follow-up
 - [x] Build & verify dummy_dep_confusion (A2)
 - [x] Build & verify dummy_hijack (A3)
+- [x] Implement A4 combosquatting detection (src/combosquat.rs)
+- [x] Implement B3 offline verification seam (diff_findings, run_version_diff_local)
+- [x] Create on-disk dummy fixtures (dummy_obfuscated, dummy_malicious_update)
+- [x] Create integration tests (tests/layer0_dummy.rs, tests/layer1_dummy.rs)
 
 ### Layer 2
 - [ ] Docker base image (node:lts-alpine + strace + tcpdump)

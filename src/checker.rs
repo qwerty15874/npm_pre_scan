@@ -1,6 +1,7 @@
 use serde_json::{Map, Value};
 
 use crate::age_check::check_age_and_downloads;
+use crate::combosquat::check_combosquat;
 use crate::maintainer::check_maintainer_change;
 use crate::models::{score_findings, CheckResult, Finding, Verdict};
 use crate::namespace::check_namespace_conflict;
@@ -47,6 +48,11 @@ pub fn run_layer0(
         push_finding(&mut findings, "namespace", raw);
     }
 
+    // Check 3: Combosquatting (name-based, no registry needed)
+    if let Some(raw) = check_combosquat(package_name, top_packages) {
+        push_finding(&mut findings, "combosquat", raw);
+    }
+
     // Fetch registry metadata for remaining checks
     let info = match get_package_info(package_name) {
         None => {
@@ -65,17 +71,17 @@ pub fn run_layer0(
         Some(v) => v,
     };
 
-    // Check 3: Age + download spike
+    // Check 4: Age + download spike
     if let Some(raw) = check_age_and_downloads(package_name, &info) {
         push_finding(&mut findings, "age_downloads", raw);
     }
 
-    // Check 4: Maintainer change
+    // Check 5: Maintainer change
     if let Some(raw) = check_maintainer_change(&info) {
         push_finding(&mut findings, "maintainer", raw);
     }
 
-    // Check 5: Registry signature verification
+    // Check 6: Registry signature verification
     if let Some(raw) = crate::signatures::check_signatures(package_name, &info) {
         push_finding(&mut findings, "signatures", raw);
     }

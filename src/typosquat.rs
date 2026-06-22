@@ -43,7 +43,7 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
 
 /// Strip the scope from a package name for bare comparison.
 /// `@scope/name` → `name`, `name` → `name`
-fn bare_name(name: &str) -> &str {
+pub(crate) fn bare_name(name: &str) -> &str {
     if let Some(pos) = name.find('/') {
         &name[pos + 1..]
     } else {

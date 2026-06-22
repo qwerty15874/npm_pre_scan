@@ -38,7 +38,7 @@ fn sorted_versions(info: &Value) -> Vec<String> {
 /// Map of relative .js path → file contents under `dir`.
 const JS_EXTENSIONS: &[&str] = &["js", "cjs", "mjs", "ts", "tsx", "jsx"];
 
-fn js_contents(dir: &Path) -> HashMap<String, String> {
+pub(crate) fn js_contents(dir: &Path) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
         let p = entry.path();
@@ -72,38 +72,15 @@ fn added_text(prev: Option<&String>, latest: &str) -> String {
     }
 }
 
-/// Compare the latest published version against the previous one and flag
-/// suspicious code that was newly introduced. Best-effort: returns no findings
-/// if the package has fewer than two versions or tarballs can't be fetched.
-pub fn check_version_diff(info: &Value) -> Vec<Finding> {
-    let versions = sorted_versions(info);
-    if versions.len() < 2 {
-        return vec![];
-    }
-    let prev_v = &versions[versions.len() - 2];
-    let latest_v = &versions[versions.len() - 1];
-
-    let prev_url = match tarball::get_version_tarball_url(info, prev_v) {
-        Some(u) => u,
-        None => return vec![],
-    };
-    let latest_url = match tarball::get_version_tarball_url(info, latest_v) {
-        Some(u) => u,
-        None => return vec![],
-    };
-
-    let prev_dir = match tarball::download_and_extract(&prev_url) {
-        Ok(d) => d,
-        Err(_) => return vec![],
-    };
-    let latest_dir = match tarball::download_and_extract(&latest_url) {
-        Ok(d) => d,
-        Err(_) => return vec![],
-    };
-
-    let prev_files = js_contents(prev_dir.path());
-    let latest_files = js_contents(latest_dir.path());
-
+/// Scan the line-set difference between two sets of JS files and return findings
+/// for newly introduced suspicious patterns. This is the pure, testable core of
+/// the B3 (malicious version update) check.
+pub(crate) fn diff_findings(
+    prev_files: &HashMap<String, String>,
+    latest_files: &HashMap<String, String>,
+    prev_v: &str,
+    latest_v: &str,
+) -> Vec<Finding> {
     let re_eval_buf = Regex::new(r"eval\s*\(\s*Buffer\.from\s*\(").unwrap();
     let re_eval = Regex::new(r"eval\s*\(").unwrap();
     let re_sensitive = Regex::new(r"/etc/passwd|/etc/shadow|~/\.ssh|/\.ssh/").unwrap();
@@ -114,7 +91,7 @@ pub fn check_version_diff(info: &Value) -> Vec<Finding> {
     let re_env = Regex::new(r"process\.env\b").unwrap();
 
     let mut findings = Vec::new();
-    for (file, latest_content) in &latest_files {
+    for (file, latest_content) in latest_files {
         let added = added_text(prev_files.get(file), latest_content);
         if added.trim().is_empty() {
             continue;
@@ -175,6 +152,41 @@ pub fn check_version_diff(info: &Value) -> Vec<Finding> {
     }
 
     findings
+}
+
+/// Compare the latest published version against the previous one and flag
+/// suspicious code that was newly introduced. Best-effort: returns no findings
+/// if the package has fewer than two versions or tarballs can't be fetched.
+pub fn check_version_diff(info: &Value) -> Vec<Finding> {
+    let versions = sorted_versions(info);
+    if versions.len() < 2 {
+        return vec![];
+    }
+    let prev_v = &versions[versions.len() - 2];
+    let latest_v = &versions[versions.len() - 1];
+
+    let prev_url = match tarball::get_version_tarball_url(info, prev_v) {
+        Some(u) => u,
+        None => return vec![],
+    };
+    let latest_url = match tarball::get_version_tarball_url(info, latest_v) {
+        Some(u) => u,
+        None => return vec![],
+    };
+
+    let prev_dir = match tarball::download_and_extract(&prev_url) {
+        Ok(d) => d,
+        Err(_) => return vec![],
+    };
+    let latest_dir = match tarball::download_and_extract(&latest_url) {
+        Ok(d) => d,
+        Err(_) => return vec![],
+    };
+
+    let prev_files = js_contents(prev_dir.path());
+    let latest_files = js_contents(latest_dir.path());
+
+    diff_findings(&prev_files, &latest_files, prev_v, latest_v)
 }
 
 #[cfg(test)]

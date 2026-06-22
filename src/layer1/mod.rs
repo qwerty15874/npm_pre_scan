@@ -3,6 +3,7 @@ mod tarball;
 mod version_diff;
 
 use crate::models::{score_findings, CheckResult, Finding, Verdict};
+use std::collections::HashMap;
 use serde_json::Value;
 use std::path::Path;
 
@@ -75,6 +76,14 @@ pub fn run_layer1(package_name: &str, info: &Value) -> CheckResult {
     let mut findings = collect_dir_findings(&pkg_json, tmp.path());
     findings.extend(version_diff::check_version_diff(info));
     build_result(package_name, findings)
+}
+
+/// Run the B3 version-diff check against two local directories (prev and latest).
+/// Used by integration tests to verify the malicious-update detection without network access.
+pub fn run_version_diff_local(prev_dir: &Path, latest_dir: &Path) -> Vec<Finding> {
+    let prev_files: HashMap<String, String> = version_diff::js_contents(prev_dir);
+    let latest_files: HashMap<String, String> = version_diff::js_contents(latest_dir);
+    version_diff::diff_findings(&prev_files, &latest_files, "prev", "latest")
 }
 
 /// Run Layer 1 static analysis on a local package directory (for testing dummy packages).
