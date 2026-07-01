@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Shell scripts must stay LF — they run as container entrypoints, and a CRLF
+# shebang ("#!/bin/sh\r") fails inside the container with "exec: no such file or directory".
+*.sh text eol=lf

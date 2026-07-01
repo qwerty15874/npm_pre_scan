@@ -6,4 +6,4 @@
 46faab8ab153fae6e80e7cca38eab363075bb524edd79e42269217a083628f09
 
 # dummy_shai_hulud/infected/bundle.js fixture hash (for deterministic test)
-34490174fc68af51ff10689f1b43c6fddc4926019d59374a3b2cf0c9d0e007a9
+fbe31a8a58f864b736b7bed0e1b6f1bfc1fff447ad7397abb51bbd702e1b08c8

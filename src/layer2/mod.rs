@@ -97,6 +97,7 @@ pub fn run_layer2_local(name: &str, dir: &Path) -> CheckResult {
             "run",
             "--rm",
             "--network=none",
+            "--cap-add=SYS_PTRACE",
             "-v",
             &format!("{}:/pkg:ro", pkg_abs.display()),
             "-v",

@@ -37,8 +37,10 @@ pub fn parse_strace(phase: &str, log: &str) -> Layer2Profile {
         if let Some(cmd) = parse_execve(line) {
             profile.processes.push(cmd);
         }
-        // openat(AT_FDCWD, "path", ...) — file opened
-        if let Some(path) = parse_openat(line) {
+        // openat(AT_FDCWD, "path", ...) or open("path", ...) — file opened.
+        // musl libc (alpine) and older glibc emit the plain `open` syscall, so we
+        // must parse both forms or file-based detection (C3, sensitive reads) is blind.
+        if let Some(path) = parse_openat(line).or_else(|| parse_open(line)) {
             if path.ends_with(".node") {
                 profile.native_modules.push(path.clone());
             }
@@ -93,6 +95,18 @@ fn parse_openat(line: &str) -> Option<String> {
     // Skip the first argument (dirfd, e.g. "AT_FDCWD, ")
     let after_comma = rest.find(',')? + 1;
     let rest = rest[after_comma..].trim_start();
+    extract_quoted(rest)
+}
+
+/// Extract file path from a plain `open` strace line.
+/// Format: `open("/path/to/file", O_RDONLY|O_CLOEXEC) = 3`
+/// The `"open("` prefix does not match `"openat("` (5th char differs), so the two
+/// parsers are mutually exclusive per line.
+fn parse_open(line: &str) -> Option<String> {
+    let rest = skip_pid_prefix(line);
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix("open(")?;
+    // First argument is the path (quoted string) — no dirfd for plain open().
     extract_quoted(rest)
 }
 
@@ -207,6 +221,24 @@ mod tests {
         let line = r#"openat(AT_FDCWD, "/pkg/build/addon.node", O_RDONLY) = 5"#;
         let path = parse_openat(line).unwrap();
         assert_eq!(path, "/pkg/build/addon.node");
+    }
+
+    #[test]
+    fn parse_open_musl_style() {
+        // musl/alpine node emits the plain `open` syscall (no dirfd).
+        let line = r#"43    open("/etc/hostname", O_RDONLY|O_CLOEXEC) = 17"#;
+        assert_eq!(parse_open(line), Some("/etc/hostname".to_string()));
+        // `open(` must NOT match `openat(` lines.
+        let at = r#"openat(AT_FDCWD, "/x", O_RDONLY) = 3"#;
+        assert_eq!(parse_open(at), None);
+    }
+
+    #[test]
+    fn parse_strace_collects_plain_open_node_file() {
+        let log = "12    open(\"/work/build/addon.node\", O_RDONLY|O_CLOEXEC) = 7\n";
+        let p = parse_strace("import", log);
+        assert!(p.native_modules.contains(&"/work/build/addon.node".to_string()));
+        assert!(p.file_opens.contains(&"/work/build/addon.node".to_string()));
     }
 
     #[test]
