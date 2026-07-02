@@ -29,7 +29,9 @@
       "Bash(date -u -v-400d +\"%Y-%m-%dT%H:%M:%S+00:00\")",
       "Bash(PATH=\"$GCC_BIN:/nix/store/z480b23kymbmrijrl49246mrzyphli15-cargo-1.95.0/bin:$PATH\" cargo test *)",
       "Bash(/home/hpschkkim/문서/Dev/npm_pre_scan/target/debug/npm-pre-scan --no-color aws-sdk-client-s3)",
-      "Bash(echo \"exit: $?\")"
+      "Bash(echo \"exit: $?\")",
+      "Bash(cargo test *)",
+      "Bash(python3 -c ' *)"
     ]
   }
 }

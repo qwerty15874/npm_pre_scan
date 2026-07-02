@@ -1,5 +1,5 @@
 # CLAUDE.md
-> Last updated: 2026-07-01 (v10)
+> Last updated: 2026-07-02 (v12)
 
 ---
 
@@ -11,8 +11,8 @@ Pipeline: package name → Layer 0 → Layer 1 → Layer 2 → Layer 3 → risk 
 Layer 0  [████████████████████] DONE   Metadata check        (no execution, Rust)
 Layer 1  [████████████████████] DONE   Static analysis       (no execution, Rust)
 Layer 2  [████████████████████] DONE   Dynamic — static + live Docker verified
-Layer 3  [░░░░░░░░░░░░░░░░░░░░] TODO   Dynamic — condition mutation (Docker)
-Scoring  [░░░░░░░░░░░░░░░░░░░░] TODO   Aggregate risk score
+Layer 3  [████████████████████] DONE   Dynamic — condition mutation, live Docker verified
+Scoring  [████████████████████] DONE   Aggregate risk score (noisy-OR, --full pipeline)
 ```
 
 ---
@@ -74,14 +74,15 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 | C1 | Import-time execution (top-level index.js) | import | Layer 2 | dummy_import_time | ✅ DONE (Layer 2 live-verified: BLOCK) |
 | C2 | Slow exfiltration (DNS tunneling) | import/run | Layer 2 | dummy_slow_exfil | ✅ DONE (Layer 2 live-verified: BLOCK) |
 | C3 | Hidden binary (.node C extension) | import/run | Layer 2 | dummy_binary | ✅ DONE (Layer 2 live-verified: BLOCK) |
-| D1 | Time Bomb (date/time-gated) | condition | Layer 3 | dummy_timebomb | TODO |
-| D2 | Environment-triggered (CI evasion) | condition | Layer 3 | dummy_env_triggered | TODO |
-| D3 | Trigger-on-use (API-call-gated) | run-time | Layer 3 | dummy_api_triggered | TODO |
+| D1 | Time Bomb (date/time-gated) | condition | Layer 3 | dummy_timebomb | ✅ DONE (L3 live-verified: clock scenario triggers DNS) |
+| D2 | Environment-triggered (CI evasion) | condition | Layer 3 | dummy_env_triggered | ✅ DONE (L3 live-verified: env scenario triggers DNS) |
+| D3 | Trigger-on-use (API-call-gated) | run-time | Layer 3 | dummy_api_triggered | ✅ DONE (L3 live-verified: fuzz scenario triggers DNS) |
 | E1 | Self-propagating worm (Shai-Hulud) | install/import/run | Layer 1 (worm signature) + Layer 2/3 | dummy_shai_hulud | ✅ DONE (L1 static + L2 live worm-egress BLOCK); L3 TODO |
 
 > A4 and B3 promoted from candidates to DONE (implemented and verified via integration tests).
 > E1 Layer 1 static detection done (worm_signature.rs); Layer 2 dynamic worm-egress live-verified (BLOCK); Layer 3 deferred.
-> Coverage is considered complete only when every non-candidate in-scope vector is VERIFIED.
+> D1/D2/D3 promoted to DONE (Layer 3 condition mutation, live Docker verified 2026-07-01).
+> **All in-scope detection vectors (A1–E1) are now DONE and verified.** Remaining work is risk-score aggregation, not coverage.
 
 ---
 
@@ -103,6 +104,74 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 - Comparison targets: OSCAR (ASE 2024), MalOSS (NDSS 2021), DONAPI (USENIX 2024).
 - Ladisa 107 vectors → explicitly scoped to npm-consumer-detectable vectors.
 - Both core contributions emphasized: (1) unified single tool, (2) Layer 3 condition mutation.
+
+### v12: Risk-score aggregation complete — unified single tool (2026-07-02)
+- **Final build task done**: `src/report.rs` aggregates the four layers' `CheckResult`s into one
+  `RiskReport { package, risk_score, verdict, detections }` — delivering **core contribution #1
+  ("a unified single tool")** end-to-end. Pure function; **no layer detection logic changed**
+  (reuses `models::score_findings`). `pub use report::{RiskReport, aggregate, run_full_local}`.
+- **`--full <DIR>` orchestrator**: chains L1_local + L2 + L3 → one `RiskReport` (Docker). Name scans
+  now also emit a `RiskReport` (L0+L1, `layer_2`/`layer_3` empty) as the standard `--json` output;
+  `--local`/`--layer2`/`--layer3` single-layer modes still emit a raw `CheckResult`.
+- **Score = weighted noisy-OR** `1 − ∏(1 − wᵢ·scoreᵢ/100)`, weights `[1.0,1.0,0.5,1.0]` (Layer 2
+  down-weighted for its over-approximation), Error layers excluded, 2-dp. Example confirmed:
+  L0=15/L1=50/L2=100/L3=15 → **0.82**.
+- **Layer 2 verdict cap (found in live verification, user-approved)**: `run_full_local` on the benign
+  control `dummy_benign_l3` initially returned BLOCK because npm's own install reads `.npmrc`//etc/passwd
+  → L2 `sensitive_file_read` (L1/L3 clean). Fix: in `aggregate`, Layer 2 is **capped at SUSPECT** in the
+  verdict — it can raise suspicion but never alone force BLOCK (BLOCK must come from L0/L1/L3). All L2
+  findings still surface in `detections` + `risk_score`. This is the verdict-level analog of the score
+  down-weight and keeps credential-read detections visible without letting toolchain noise dominate.
+- **Live-verified (2026-07-02, WSL2 + Docker 29.1.3)**: `cargo test --test full_pipeline -- --ignored`
+  = 2 passed — dummy_timebomb → SUSPECT, risk_score 0.57, `layer_3` timebomb detection; dummy_benign_l3
+  → SUSPECT (L1+L3 clean, L2 baseline noise only). Offline suite = **127 passed** (was 114; +11 report
+  units/integration + the 2 full_pipeline are `#[ignore]`d). Docker-gated total = 11.
+- **Known limitation reaffirmed**: unified precision for *unconditional-at-install* attacks is bounded by
+  Layer 2's lack of baseline subtraction; Layer 3's baseline-diff only cleans *condition-gated* behavior.
+  A benign package still surfaces as SUSPECT (npm baseline reads). Full L2 baseline subtraction = future work.
+- **Minor cosmetic (noted, not fixed)**: Layer 3 findings keep the reused Layer 2 `vector` (e.g. `C1`)
+  while `check` is the L3 name (`timebomb`); the `layer_3` placement + check name convey the scenario.
+
+### v11: Layer 3 condition mutation complete — core contribution (2026-07-01)
+- **Layer 3 implemented and live-verified** — the headline differentiator (active condition mutation
+  that OSCAR/MalOSS/DONAPI do not perform). Reuses Layer 2's "dumb container + smart Rust" split:
+  `docker/run_layer3.sh` runs the package's import step under a clean **baseline** plus three mutated
+  scenarios, each with its own per-scenario dnsmasq log (restarted between scenarios), then Rust
+  **diffs** each mutated profile against the baseline and classifies only the mutation-induced events.
+  - **Scenario clock (D1)**: `libfaketime` (LD_PRELOAD) + absolute `FAKETIME="@2026-09-29 00:00:00"`.
+    Empirically confirmed libfaketime **works on `node:lts-alpine`/musl** (survives `strace -f` and the
+    `sh→node` postinstall chain) — the earlier "unreliable on musl" caveat does NOT hold for this image.
+  - **Scenario env (D2)**: `env -u CI -u GITHUB_ACTIONS -u CONTINUOUS_INTEGRATION HOME=/home/developer USER=dev`.
+  - **Scenario fuzz (D3)**: `docker/fuzz_exports.js` enumerates public exports (module fn + object keys
+    + one level of nesting) and invokes each with a dummy-arg matrix (guarded, async-flushed).
+- **Reuse, not reimplement**: `src/layer3/diff.rs` (pure `diff_profiles`, path-normalizing set-difference)
+  + `src/layer3/classify.rs` (thin wrapper re-tagging `crate::layer2::classify::classify` findings with
+  `layer:3` + `scenario`). `src/layer3/mod.rs` mirrors `layer2/mod.rs` (Docker graceful-degradation,
+  `--entrypoint /run_layer3.sh` on the shared image). `--layer3 <DIR>` CLI flag added.
+- **Baseline-diff cancels Layer 2's precision noise**: npm/node `.npmrc` + `/etc/passwd` reads appear in
+  both baseline and mutated, so they subtract out — the intended fix for the v10 over-approximation.
+- **D3 baseline correctness fix (found in review)**: D3 must diff the mutated fuzz run against the
+  **plain-`require` baseline**, not a second identical fuzz run (two identical harness runs always diff to
+  empty → detects nothing). `classify` only trips on real connect/dns/child/sensitive syscalls, so merely
+  *calling* benign exports produces nothing to cancel.
+- **`env`-symmetry precision fix (found in live verification)**: the `baseline`/`fuzz` scenarios ran
+  `node` directly while `clock`/`env` ran `env … node`, so `/usr/bin/env` showed up as a spurious "child
+  process spawned" (C1) in every mutated diff — mis-attributing dummy_timebomb to D2 AND flagging even
+  BENIGN packages as SUSPECT. Fixed by prefixing ALL four scenarios with a bare `env` so the `env` exec +
+  its libc opens appear in baseline too and cancel. Added `dummy_benign_l3` (pure `add(a,b)`, no side
+  effects) + a live control test asserting `Verdict::Pass` — the proof that baseline-diff precision holds.
+- **Live-verified (WSL2/Ubuntu 26.04 + Docker 29.1.3)**: `cargo test --test layer3_dynamic -- --ignored` =
+  4 passed. Each malicious dummy fires via ONLY its intended scenario (dummy_timebomb→D1 clock,
+  dummy_env_triggered→D2 env, dummy_api_triggered→D3 fuzz, dormant otherwise); dummy_benign_l3→PASS (no
+  false positives). Layer 2's 5 live tests still pass (shared-image change is additive). Offline suite =
+  114 passed (was 97; +12 diff/classify units + 5 layer3_diff fixture tests). Docker-gated total now 9
+  (5 Layer 2 + 4 Layer 3).
+- **Known limitations (documented, not omitted)**:
+  - **Network-time timebombs are out of scope**: payloads gated on NTP / HTTP `Date` header see nothing
+    under `--network=none` + sinkhole (both time source and callback blocked). Layer 3 covers *local-clock*
+    checks — the common case.
+  - **API fuzzer is best-effort**: exports needing specific arg shapes / constructor protocols may not
+    trigger; such cases are swallowed (logged, not crashed), not guaranteed-covered.
 
 ### v10: Layer 2 live Docker verification complete (2026-07-01)
 - **All 5 Layer 2 dynamic tests pass in real containers** (WSL2/Ubuntu 26.04, Docker 29.1.3):
@@ -197,7 +266,10 @@ Binary:
   npm-pre-scan [--json] [--no-color] <pkg> [<pkg>...]
   npm-pre-scan --local <dir>    (Layer 1 only on local dir)
   npm-pre-scan --layer2 <dir>   (Layer 2 dynamic analysis — requires Docker)
+  npm-pre-scan --layer3 <dir>   (Layer 3 condition mutation — requires Docker)
+  npm-pre-scan --full <dir>     (full pipeline L1+L2+L3 → aggregate risk report; requires Docker)
   exit 0=PASS  1=SUSPECT  2=BLOCK  3=ERROR
+  (name scans also emit the aggregate RiskReport: L0+L1, layer_2/layer_3 empty)
 
 Severity rules:
   typosquat distance=1 (name ≥5 chars)               → BLOCK
@@ -288,29 +360,84 @@ for any package that runs `npm install`. Layer 2 does no baseline subtraction �
 toolchain noise is exactly what Layer 3's behavior-diff-vs-baseline is designed to do.
 ```
 
-### Layer 3 — TODO (★ core contribution)
+### Layer 3 — DONE (★ core contribution, static + live Docker verified)
 ```
-Environment: Layer 2 container + mutation layer (run ALL scenarios)
-Scenario 1 — clock manipulation: libfaketime +30d/+90d/+180d, re-run
-Scenario 2 — environment spoofing: HOME=/home/developer, USER=dev, strip CI env vars, change hostname
-Scenario 3 — API fuzzing: auto-invoke all public exports with dummy args (string/number/object/null/undefined)
-Output: per-scenario behavior diff (new events vs Layer 2 baseline)
-Covers: D1, D2, D3
-→ Active condition mutation not performed by existing tools (incl. OSCAR). The differentiator.
+Architecture: reuse Layer 2's "dumb container + smart Rust" split, add a mutation layer.
+  docker/run_layer3.sh   → per scenario: (re)start dnsmasq sinkhole → dns_<scenario>.log,
+                           run import under strace → strace_<scenario>.log, SIGTERM dnsmasq.
+                           Scenarios: baseline, clock, env, fuzz. npm install done once, unmutated.
+  docker/fuzz_exports.js → enumerate exports (module fn + object keys + 1 level nesting) and
+                           invoke each with a dummy-arg matrix (guarded, async-flushed).
+  src/layer3/diff.rs     → diff_profiles(baseline, mutated) → Layer2Profile of mutated-only events
+                           (set difference; normalizes /tmp, /proc/<pid>, .npm cache). [pure, tested]
+  src/layer3/classify.rs → classify_scenario(scenario, diff): reuse layer2::classify::classify,
+                           re-tag each Finding with layer:3 + scenario + Layer-3 check name. [tested]
+  src/layer3/mod.rs      → run_layer3_local(): docker run (--entrypoint /run_layer3.sh, shared image)
+                           → read per-scenario logs → parse (layer2::profile) → diff vs baseline
+                           → classify. Graceful Verdict::Error when Docker absent.
+
+Scenarios / mutation → vector:
+  clock (D1)  LD_PRELOAD=/usr/lib/faketime/libfaketime.so.1 FAKETIME="@2026-09-29 00:00:00"  (time bomb)
+  env   (D2)  env -u CI -u GITHUB_ACTIONS -u CONTINUOUS_INTEGRATION HOME=/home/developer USER=dev
+  fuzz  (D3)  node /fuzz_exports.js — invoke public API surface (trigger-on-use)
+
+Baseline pairing: D1/D2 diff vs the plain-`require` baseline; D3 diffs the fuzz run vs the SAME
+plain-`require` baseline (payload dormant at require, fires when exports are invoked). Severity comes
+from the reused Layer 2 classifier (egress host / sensitive read → BLOCK; other network/child/side
+effect → SUSPECT). Baseline-diff cancels npm/node toolchain noise (the v10 precision fix).
+
+Files:
+  docker/Dockerfile           — + libfaketime; COPY run_layer3.sh + fuzz_exports.js (Layer 2 entrypoint intact)
+  docker/run_layer3.sh        — per-scenario raw-log capture (LF-committed; CRLF shebang footgun)
+  docker/fuzz_exports.js      — D3 export-invocation harness
+  src/layer3/{mod,diff,classify}.rs
+  tests/fixtures/layer3/       — per-scenario baseline + mutated fixture logs
+  tests/layer3_diff.rs         — 5 offline tests (parse → diff → classify; noise-cancellation)
+  tests/layer3_dynamic.rs      — 4 Docker-gated tests (#[ignore]d): 3 malicious dummies + benign control
+  CLI: npm-pre-scan --layer3 <dir>   exit 0/1/2/3
+
+Live-verified (2026-07-01, WSL2/Ubuntu 26.04 + Docker 29.1.3): `cargo test --test layer3_dynamic --
+--ignored` = 4 passed. dummy_timebomb→D1 (clock), dummy_env_triggered→D2 (env), dummy_api_triggered→D3
+(fuzz) — each fires via ONLY its intended scenario, dormant otherwise; dummy_benign_l3→PASS (control,
+no false positives). All four scenarios exec via `env → node` so the wrapper cancels in the diff.
+
+Known limitations: network-time timebombs (NTP / HTTP Date header) out of scope under --network=none;
+API fuzzer is best-effort (exports needing specific arg shapes/constructors may not trigger).
 ```
 
-### Risk-score aggregation — TODO
+### Risk-score aggregation — DONE (offline + live Docker verified)
+```
+src/report.rs — pure aggregation over existing layer CheckResults (no layer logic changed):
+  RiskReport { package, risk_score: f64, verdict, detections: {layer_0..layer_3: [String]} }
+  aggregate(pkg, [Option<&CheckResult>; 4]) -> RiskReport
+  run_full_local(name, dir) -> RiskReport   (L1_local + L2 + L3, aggregated; layer_0 empty for local)
+
+Score: weighted NOISY-OR  risk_score = 1 − ∏(1 − wᵢ·scoreᵢ/100)  over layers that ran & verdict≠Error.
+  Weights [L0,L1,L2,L3] = [1.0, 1.0, 0.5, 1.0]. Layer 2 down-weighted 0.5 (over-approximation).
+  Rounded to 2 dp; an Error layer (e.g. Docker absent) contributes nothing to risk.
+Verdict: worst-of layers (BLOCK>SUSPECT>ERROR>PASS), BUT Layer 2 is CAPPED at SUSPECT — L2's
+  documented npm-baseline noise (.npmrc//etc/passwd reads) can raise suspicion but never alone force
+  BLOCK; BLOCK must come from L0/L1/L3. All L2 findings still appear in detections + risk_score.
+detections: each Finding → "{vector}: {check} ({message})" (or "{check}: {message}" if no vector).
+
+CLI: npm-pre-scan --full <dir>  (L1+L2+L3, Docker); name scans emit RiskReport from L0+L1.
+Tests: tests/report_aggregate.rs (offline) + report.rs units (incl. 0.82 example, L2-cap);
+       tests/full_pipeline.rs (2 Docker-gated: dummy_timebomb→SUSPECT+layer_3, dummy_benign_l3→SUSPECT/L1+L3 clean).
+```
+
+Example output (`--full dummy_timebomb`, live):
 ```json
-{
-  "package": "name",
-  "risk_score": 0.87,
+{ "package": "dummy_timebomb", "risk_score": 0.57, "verdict": "SUSPECT",
   "detections": {
-    "layer_0": ["A1: typosquatting (edit_dist=1 from 'express')"],
-    "layer_1": ["B2: obfuscation (eval+base64 at index.js:12)"],
-    "layer_2": [],
-    "layer_3": ["D1: timebomb (network activity after +90d)"]
-  }
-}
+    "layer_0": [], "layer_1": [],
+    "layer_2": ["B1: sensitive_file_read (Sensitive file opened: /work/.npmrc)", "..."],
+    "layer_3": ["C1: timebomb (Import-phase side effect detected: network activity)"] } }
+```
+Target schema (name scan with all layers populated):
+```json
+{ "package": "name", "risk_score": 0.87, "verdict": "BLOCK",
+  "detections": { "layer_0": ["A1: typosquat (…)"], "layer_1": ["B2: obfuscation (…)"],
+                  "layer_2": [], "layer_3": ["D1: timebomb (…)"] } }
 ```
 
 ---
@@ -331,9 +458,10 @@ Covers: D1, D2, D3
 | dummy_import_time | Layer 2 (C1) | L0-1 PASS | ✅ VERIFIED: BLOCK (live Docker; import_side_effect — DNS example.com) |
 | dummy_slow_exfil | Layer 2 (C2) | L0-1 PASS | ✅ VERIFIED: BLOCK (live Docker; dns_tunneling — encoded labels) |
 | dummy_binary | Layer 2 (C3) | L0-1 PASS | ✅ VERIFIED: BLOCK (live Docker; native_addon — /work/build/addon.node) |
-| dummy_timebomb | Layer 3 | L0-2 PASS | TODO |
-| dummy_env_triggered | Layer 3 | L0-2 PASS | TODO |
-| dummy_api_triggered | Layer 3 | L0-2 PASS | TODO |
+| dummy_timebomb | Layer 3 (D1) | L0-2 PASS | ✅ VERIFIED: SUSPECT (live Docker; clock scenario triggers DNS to evil.example.com) |
+| dummy_env_triggered | Layer 3 (D2) | L0-2 PASS | ✅ VERIFIED: SUSPECT (live Docker; env scenario — USER=dev/no-CI — triggers DNS) |
+| dummy_api_triggered | Layer 3 (D3) | L0-2 PASS | ✅ VERIFIED: SUSPECT (live Docker; fuzz scenario invokes run(), dormant at require) |
+| dummy_benign_l3 (control) | Layer 3 | L0-2 PASS | ✅ VERIFIED: PASS (live Docker; pure add(), no findings — precision/false-positive control) |
 
 ---
 
@@ -366,18 +494,18 @@ Covers: D1, D2, D3
 - [x] Dummy packages created: dummy_install_time, dummy_import_time, dummy_slow_exfil, dummy_binary
 - [x] Live Docker verification: all 5 dummies verified in real containers (WSL2/Ubuntu 26.04 + Docker 29.1.3), 2026-07-01
 
-### Layer 3 (core contribution)
-- [ ] libfaketime container integration
-- [ ] Environment-spoofing script
-- [ ] API fuzzer (auto-detect exports + dummy-arg invocation)
-- [ ] Behavior diff vs Layer 2 baseline
-- [ ] Verify: dummy_timebomb, dummy_env_triggered, dummy_api_triggered
+### Layer 3 (core contribution) — DONE
+- [x] libfaketime container integration (verified working on node:lts-alpine/musl)
+- [x] Environment-spoofing script (env scenario: strip CI vars, USER=dev, HOME=/home/developer)
+- [x] API fuzzer (docker/fuzz_exports.js: auto-detect exports + dummy-arg invocation)
+- [x] Behavior diff vs baseline (src/layer3/diff.rs: normalized set-difference)
+- [x] Verify: dummy_timebomb (D1), dummy_env_triggered (D2), dummy_api_triggered (D3) — live Docker, 2026-07-01
 
 ### Integration
-- [ ] Layer 0~3 outputs → weighted risk score
-- [ ] JSON report output
-- [ ] Confirm full coverage: every non-candidate in-scope vector VERIFIED
-- [ ] Finalize evaluation method (TBD)
+- [x] Layer 0~3 outputs → weighted risk score (src/report.rs: noisy-OR, L2 down-weighted; --full pipeline)
+- [x] JSON report output (RiskReport serde struct; --json on all modes)
+- [x] Confirm full coverage: every non-candidate in-scope vector VERIFIED (A1–E1 + D1/D2/D3 done)
+- [ ] Finalize evaluation method (TBD — dummy verification stays; OSSF real-benchmark undecided)
 
 ---
 
