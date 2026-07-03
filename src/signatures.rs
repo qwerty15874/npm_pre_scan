@@ -7,9 +7,13 @@ use serde_json::{Map, Value};
 use crate::models::Finding;
 use crate::registry::get_registry_keys;
 
+// Registry-signature verification has no clean Ladisa taxonomy vector — it's
+// a heuristic/metadata signal (npm's own signing infrastructure), not a
+// distinct attack vector — so every finding here is tagged "META".
 fn finding(severity: &str, message: &str) -> Finding {
     let mut m = Map::new();
     m.insert("severity".into(), Value::String(severity.to_string()));
+    m.insert("vector".into(), Value::String("META".into()));
     m.insert("message".into(), Value::String(message.to_string()));
     m
 }
@@ -55,7 +59,14 @@ fn key_expired(key: &Value) -> bool {
 /// - valid signature → `None` (clean; no score noise)
 /// - `dist.signatures` missing → SUSPECT (version not signed)
 /// - present-but-invalid, or no valid/unexpired key → BLOCK (possible tampering)
-/// - no SRI integrity, or registry keys unfetchable → `None` (best-effort; never false-BLOCK)
+/// - no SRI integrity → `None` (nothing to verify against; best-effort, never false-BLOCK)
+/// - registry keys unfetchable (network/parse error) → INFO note ("signature
+///   verification skipped — registry keys unavailable"). This is deliberately
+///   NOT `None`: a silent `None` here is indistinguishable from "verified
+///   clean", so a genuinely unsigned/tampered package would look identical to
+///   a properly signed one whenever the keys endpoint has a transient failure.
+///   INFO does not affect the aggregate verdict (never false-BLOCK/SUSPECT)
+///   but is visible in findings/score.
 pub fn check_signatures(package_name: &str, info: &Value) -> Option<Finding> {
     let version = latest_version(info)?;
     let dist = info.get("versions")?.get(&version)?.get("dist")?;
@@ -78,7 +89,15 @@ pub fn check_signatures(package_name: &str, info: &Value) -> Option<Finding> {
         }
     };
 
-    let keys = get_registry_keys()?;
+    let keys = match get_registry_keys() {
+        Some(k) => k,
+        None => {
+            return Some(finding(
+                "INFO",
+                "Signature verification skipped — registry keys unavailable (network or parse error)",
+            ));
+        }
+    };
     let payload = format!("{}@{}:{}", package_name, version, integrity);
 
     for sig_entry in signatures {
@@ -150,6 +169,7 @@ mod tests {
         });
         let f = check_signatures("pkg", &info).expect("expected a finding");
         assert_eq!(f.get("severity").and_then(|v| v.as_str()), Some("SUSPECT"));
+        assert_eq!(f.get("vector").and_then(|v| v.as_str()), Some("META"));
     }
 
     #[test]

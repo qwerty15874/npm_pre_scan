@@ -57,6 +57,11 @@ fn b3_malicious_update_diff_blocks() {
         "Expected a BLOCK finding for newly introduced eval(Buffer.from()); got: {:?}",
         findings
     );
+    assert!(
+        findings.iter().all(|f| f.get("vector").and_then(|v| v.as_str()) == Some("B3")),
+        "Every version_diff finding must carry vector=B3; got: {:?}",
+        findings
+    );
 }
 
 // B3: prev-only run (same dir for both) produces no findings (no new code)

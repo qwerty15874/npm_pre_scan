@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use npm_pre_scan::run_full_local;
-use npm_pre_scan::Verdict;
+use npm_pre_scan::{LayerStatus, Verdict};
 
 /// Live full-pipeline run on dummy_timebomb (D1 condition-mutation vector) — requires Docker.
 #[test]
@@ -32,13 +32,34 @@ fn dummy_timebomb_full_pipeline_flags_risk() {
         "expected non-empty layer_3 detections; got {:?}",
         report.detections.layer_3
     );
+    // 4b: run_full_local skips Layer 0 (no registry identity for a local dir —
+    // genuinely NotRun, not Skipped, since nothing short-circuited it); L1/L2/L3 all ran.
+    assert_eq!(
+        report.layer_status[0],
+        LayerStatus::NotRun,
+        "expected Layer 0 NotRun for run_full_local; got {:?}",
+        report.layer_status[0]
+    );
+    assert_eq!(
+        report.layer_status[3],
+        LayerStatus::Ran,
+        "expected Layer 3 Ran; got {:?}",
+        report.layer_status[3]
+    );
+    // 4a: the D1 finding(s) carry evidence (the exact new event(s) under the clock scenario).
+    assert!(
+        !report.evidence.layer_3.is_empty(),
+        "expected non-empty layer_3 evidence for a live D1 detection; got {:?}",
+        report.evidence.layer_3
+    );
 }
 
 /// Benign control (payload-free pure export) — requires Docker.
-/// Layer 2 fires sensitive_file_read on npm's OWN baseline reads (.npmrc during
-/// `npm install`) — its documented over-approximation. The aggregate caps L2 at
-/// SUSPECT, so the benign control lands on SUSPECT (from L2 noise only) while
-/// L1 and L3 stay clean — proving the SUSPECT does NOT come from real payload.
+/// Layer 2 now diffs each phase's real run against its own pristine baseline
+/// (see `layer2::mod::run_layer2_local`), which cancels npm's own toolchain
+/// reads (.npmrc, /etc/passwd) at the source instead of just capping the
+/// verdict — so a genuinely benign package's post-subtraction diff is empty
+/// and the full pipeline now lands on a clean PASS across all four layers.
 #[test]
 #[ignore]
 fn dummy_benign_l3_full_pipeline_is_clean() {
@@ -47,20 +68,37 @@ fn dummy_benign_l3_full_pipeline_is_clean() {
 
     assert_eq!(
         report.verdict,
-        Verdict::Suspect,
-        "expected SUSPECT for benign control (L2 baseline noise, capped); got {:?} with detections: {:?}",
+        Verdict::Pass,
+        "expected PASS for benign control (baseline subtraction removes npm toolchain noise); got {:?} with detections: {:?}",
         report.verdict,
         report.detections
     );
-    // The SUSPECT comes only from Layer 2's npm-install baseline noise: L1 and L3 are clean.
     assert!(
         report.detections.layer_1.is_empty(),
         "layer_1 must be clean for benign control; got {:?}",
         report.detections.layer_1
     );
     assert!(
+        report.detections.layer_2.is_empty(),
+        "layer_2 must be clean for benign control after baseline subtraction; got {:?}",
+        report.detections.layer_2
+    );
+    assert!(
         report.detections.layer_3.is_empty(),
         "layer_3 must be clean for benign control; got {:?}",
         report.detections.layer_3
     );
+    // 4b: the whole point of layer_status — L1/L2/L3 empty detections here mean
+    // "ran and found nothing" (Ran), not "never executed" (NotRun). Only L0 is
+    // genuinely NotRun (run_full_local has no registry identity for a local dir).
+    assert_eq!(
+        report.layer_status,
+        [LayerStatus::NotRun, LayerStatus::Ran, LayerStatus::Ran, LayerStatus::Ran],
+        "expected L0=not_run, L1-3=ran (clean) for the benign control; got {:?}",
+        report.layer_status
+    );
+    // 4a: no findings anywhere means no evidence anywhere either.
+    assert!(report.evidence.layer_1.is_empty());
+    assert!(report.evidence.layer_2.is_empty());
+    assert!(report.evidence.layer_3.is_empty());
 }

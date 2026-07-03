@@ -12,8 +12,8 @@ use std::collections::HashSet;
 use crate::layer2::profile::Layer2Profile;
 
 /// Normalize a filesystem path before differencing so nondeterministic paths
-/// (tmp dirs, PIDs, npm cache dirs) don't create false "new events" between
-/// baseline and mutated runs.
+/// (tmp dirs, PIDs, npm cache dirs, npm debug logs, lockfile temp names) don't
+/// create false "new events" between baseline and mutated/real runs.
 fn normalize_path(path: &str) -> String {
     // /proc/<pid>/... -> /proc/PID/...
     if let Some(rest) = path.strip_prefix("/proc/") {
@@ -32,6 +32,18 @@ fn normalize_path(path: &str) -> String {
     if path.contains("/.npm/_cacache/") {
         return "/NPM_CACHE".to_string();
     }
+    // npm debug logs, e.g. /root/.npm/_logs/2026-07-01T12_00_00_000Z-debug-0.log
+    // — timestamped per invocation, never the same name twice.
+    if path.contains("/.npm/_logs/") {
+        return "/NPM_LOGS".to_string();
+    }
+    // npm's lockfile / temp lock artifacts written during `npm install`, e.g.
+    // node_modules/.package-lock.json, .package-lock.json.<random>.tmp — the
+    // random suffix (or even just presence/absence timing) makes these
+    // nondeterministic between the baseline and real install runs.
+    if path.contains("package-lock.json") {
+        return "/PACKAGE_LOCK".to_string();
+    }
     path.to_string()
 }
 
@@ -47,7 +59,26 @@ fn plain_set<'a, I: IntoIterator<Item = &'a String>>(items: I) -> HashSet<String
 /// Every field is compared as a set (order/duplicates don't matter); the
 /// result is packed into a synthetic `Layer2Profile` with `phase = "import"`
 /// so it can be run straight through `classify::classify`.
+///
+/// This is a back-compatible wrapper over `diff_profiles_phase` — all existing
+/// Layer 3 callers (which only ever diff import-phase scenarios) are unchanged.
 pub fn diff_profiles(baseline: &Layer2Profile, mutated: &Layer2Profile) -> Layer2Profile {
+    diff_profiles_phase(baseline, mutated, "import")
+}
+
+/// Return only the events present in `mutated` but absent from `baseline`,
+/// tagging the result with the given `phase` ("install" or "import") instead
+/// of hardcoding "import". This is what lets Layer 2's baseline-subtraction
+/// (Phase 2) diff install-phase runs and get a `phase == "install"` profile
+/// back, so `classify::classify` applies the correct phase-dependent rules
+/// (B1 for install, C1 for import).
+///
+/// Every field is compared as a set (order/duplicates don't matter).
+pub fn diff_profiles_phase(
+    baseline: &Layer2Profile,
+    mutated: &Layer2Profile,
+    phase: &str,
+) -> Layer2Profile {
     let baseline_files = normalized_set(&baseline.file_opens);
     let mutated_files = normalized_set(&mutated.file_opens);
     let file_opens: Vec<String> = mutated_files
@@ -81,13 +112,42 @@ pub fn diff_profiles(baseline: &Layer2Profile, mutated: &Layer2Profile) -> Layer
         .collect();
 
     Layer2Profile {
-        phase: "import".to_string(),
+        phase: phase.to_string(),
         processes,
         file_opens,
         connects,
         dns_queries,
         native_modules,
     }
+}
+
+/// Maximum number of evidence lines attached to a Finding. The underlying
+/// diff can be large (e.g. a wide DNS-tunneling fan-out); bounding this keeps
+/// the JSON report and `--verbose` output readable.
+const EVIDENCE_CAP: usize = 20;
+
+/// Render a diff `Layer2Profile` (the output of `diff_profiles`/
+/// `diff_profiles_phase` — i.e. only the NEW events under mutation or vs.
+/// baseline) as a flat, human-readable evidence list: `"dns:evil.example.com"`,
+/// `"connect:1.2.3.4:443"`, `"proc:/usr/bin/id"`, `"file:/etc/passwd"`.
+///
+/// Pure/visibility-only: this does not feed back into classification or
+/// scoring — it exists so a Finding can show WHICH exact new event triggered
+/// it, instead of just the aggregate severity. Bounded to `EVIDENCE_CAP`
+/// entries (processes, then file opens, then dns queries, then connects, in
+/// that order) so a large diff doesn't blow up the report.
+pub fn evidence_lines(diff: &Layer2Profile) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    lines.extend(diff.processes.iter().map(|p| format!("proc:{}", p)));
+    lines.extend(diff.file_opens.iter().map(|p| format!("file:{}", p)));
+    lines.extend(diff.dns_queries.iter().map(|q| format!("dns:{}", q)));
+    lines.extend(
+        diff.connects
+            .iter()
+            .map(|(ip, port)| format!("connect:{}:{}", ip, port)),
+    );
+    lines.truncate(EVIDENCE_CAP);
+    lines
 }
 
 #[cfg(test)]
@@ -195,5 +255,113 @@ mod tests {
             "different PIDs must normalize to the same token: {:?}",
             diff.file_opens
         );
+    }
+
+    #[test]
+    fn npm_logs_paths_normalize_and_cancel() {
+        let mut baseline = base_profile();
+        baseline
+            .file_opens
+            .push("/root/.npm/_logs/2026-07-01T12_00_00_000Z-debug-0.log".to_string());
+        let mut mutated = base_profile();
+        mutated
+            .file_opens
+            .push("/root/.npm/_logs/2026-07-01T12_00_01_999Z-debug-0.log".to_string());
+        let diff = diff_profiles(&baseline, &mutated);
+        assert!(
+            diff.file_opens.is_empty(),
+            "differently-timestamped npm debug logs must normalize to the same token: {:?}",
+            diff.file_opens
+        );
+    }
+
+    #[test]
+    fn package_lock_paths_normalize_and_cancel() {
+        let mut baseline = base_profile();
+        baseline
+            .file_opens
+            .push("/work/node_modules/.package-lock.json".to_string());
+        let mut mutated = base_profile();
+        mutated
+            .file_opens
+            .push("/work/.package-lock.json.4821.tmp".to_string());
+        let diff = diff_profiles(&baseline, &mutated);
+        assert!(
+            diff.file_opens.is_empty(),
+            "differently-named package-lock temp files must normalize to the same token: {:?}",
+            diff.file_opens
+        );
+    }
+
+    #[test]
+    fn diff_profiles_phase_install_tags_phase() {
+        let baseline = Layer2Profile {
+            phase: "install".to_string(),
+            ..Default::default()
+        };
+        let mut mutated = Layer2Profile {
+            phase: "install".to_string(),
+            ..Default::default()
+        };
+        mutated.processes.push("/usr/bin/curl".to_string());
+        let diff = diff_profiles_phase(&baseline, &mutated, "install");
+        assert_eq!(diff.phase, "install");
+        assert_eq!(diff.processes, vec!["/usr/bin/curl".to_string()]);
+    }
+
+    #[test]
+    fn diff_profiles_phase_import_matches_diff_profiles() {
+        let baseline = base_profile();
+        let mut mutated = base_profile();
+        mutated.dns_queries.push("evil.example.com".to_string());
+        let via_phase = diff_profiles_phase(&baseline, &mutated, "import");
+        let via_wrapper = diff_profiles(&baseline, &mutated);
+        assert_eq!(via_phase.phase, via_wrapper.phase);
+        assert_eq!(via_phase.dns_queries, via_wrapper.dns_queries);
+    }
+
+    #[test]
+    fn evidence_lines_formats_each_kind() {
+        let mut diff = Layer2Profile {
+            phase: "import".to_string(),
+            ..Default::default()
+        };
+        diff.processes.push("/usr/bin/id".to_string());
+        diff.file_opens.push("/etc/passwd".to_string());
+        diff.dns_queries.push("evil.example.com".to_string());
+        diff.connects.push(("1.2.3.4".to_string(), 443));
+
+        let lines = evidence_lines(&diff);
+        assert_eq!(
+            lines,
+            vec![
+                "proc:/usr/bin/id".to_string(),
+                "file:/etc/passwd".to_string(),
+                "dns:evil.example.com".to_string(),
+                "connect:1.2.3.4:443".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn evidence_lines_empty_diff_is_empty() {
+        let diff = Layer2Profile {
+            phase: "import".to_string(),
+            ..Default::default()
+        };
+        assert!(evidence_lines(&diff).is_empty());
+    }
+
+    #[test]
+    fn evidence_lines_capped_at_20() {
+        let mut diff = Layer2Profile {
+            phase: "import".to_string(),
+            ..Default::default()
+        };
+        for i in 0..50 {
+            diff.dns_queries.push(format!("q{}.example.com", i));
+        }
+        let lines = evidence_lines(&diff);
+        assert_eq!(lines.len(), EVIDENCE_CAP);
     }
 }

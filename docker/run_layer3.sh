@@ -123,6 +123,10 @@ stop_dns
 echo "Layer 3: fuzz scenario complete" >&2
 
 # Make all raw logs readable by the host user (dnsmasq writes 0640 as its own user).
-chmod -R a+r "$OUT_DIR" 2>/dev/null || true
+# Non-fatal (logs may still be usable), but a failure here is worth a loud
+# warning since it can silently degrade detection — don't let it pass quietly.
+if ! chmod -R a+r "$OUT_DIR" 2>/tmp/chmod_err; then
+    echo "WARNING: chmod -R a+r \"$OUT_DIR\" failed — host-side log parser may hit permission errors: $(cat /tmp/chmod_err 2>/dev/null)" >&2
+fi
 
 echo "Layer 3: analysis complete, logs in $OUT_DIR" >&2

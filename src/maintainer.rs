@@ -87,6 +87,7 @@ pub fn check_maintainer_change(info: &Value) -> Option<Map<String, Value>> {
 
     let mut f = Map::new();
     f.insert("severity".into(), Value::String("SUSPECT".into()));
+    f.insert("vector".into(), Value::String("A3".into()));
     f.insert(
         "message".into(),
         Value::String(format!(
@@ -137,6 +138,7 @@ mod tests {
         let f = check_maintainer_change(&info).unwrap();
         assert_eq!(f.get("severity").and_then(|v| v.as_str()), Some("SUSPECT"));
         assert!(f.get("message").unwrap().as_str().unwrap().contains("mallory"));
+        assert_eq!(f.get("vector").and_then(|v| v.as_str()), Some("A3"));
     }
 
     #[test]

@@ -14,18 +14,11 @@
 pub mod classify;
 pub mod diff;
 
+use crate::docker::{check_ptrace_capability, docker_available, PtraceProbe};
 use crate::layer2::profile::{self, Layer2Profile};
 use crate::models::{CheckResult, Finding, Verdict};
 use std::path::Path;
 use std::process::Command;
-
-fn docker_available() -> bool {
-    Command::new("docker")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 fn error_result(package_name: &str, note: &str) -> CheckResult {
     CheckResult {
@@ -40,17 +33,25 @@ fn error_result(package_name: &str, note: &str) -> CheckResult {
 /// Read a scenario's strace + dns logs from `out_dir` and parse them into a
 /// `Layer2Profile` tagged `phase = "import"` (Layer 3 only mutates the
 /// import/use phase, so the import-side-effect classifier rules apply).
-fn load_scenario_profile(out_dir: &Path, scenario: &str) -> Layer2Profile {
-    let read_log = |filename: String| -> String {
-        std::fs::read_to_string(out_dir.join(filename)).unwrap_or_default()
+///
+/// A missing/unreadable log is distinct from a present-but-empty one: an
+/// empty log legitimately means "no events of that kind occurred" and is
+/// parsed as such, but a missing file means the scenario never ran or its
+/// output couldn't be captured — silently substituting "" would misreport a
+/// failed scenario as a clean (empty-diff) one. Returns `Err` with the
+/// missing filename in that case.
+fn load_scenario_profile(out_dir: &Path, scenario: &str) -> Result<Layer2Profile, String> {
+    let read_log = |filename: String| -> Result<String, String> {
+        std::fs::read_to_string(out_dir.join(&filename))
+            .map_err(|e| format!("missing or unreadable log {}: {}", filename, e))
     };
 
-    let strace_log = read_log(format!("strace_{}.log", scenario));
-    let dns_log = read_log(format!("dns_{}.log", scenario));
+    let strace_log = read_log(format!("strace_{}.log", scenario))?;
+    let dns_log = read_log(format!("dns_{}.log", scenario))?;
 
     let mut prof = profile::parse_strace("import", &strace_log);
     prof.dns_queries.extend(profile::parse_dns(&dns_log));
-    prof
+    Ok(prof)
 }
 
 /// Run Layer 3 dynamic condition-mutation analysis on a local package directory.
@@ -66,6 +67,14 @@ fn load_scenario_profile(out_dir: &Path, scenario: &str) -> Layer2Profile {
 pub fn run_layer3_local(name: &str, dir: &Path) -> CheckResult {
     if !docker_available() {
         return error_result(name, "Docker required for Layer 3 — install Docker to enable dynamic analysis");
+    }
+
+    // Best-effort preflight, same rationale as Layer 2: a missing SYS_PTRACE
+    // capability makes strace silently produce empty logs, which would read
+    // as "no behavior change across scenarios" instead of "capture failed".
+    // Only a confirmed denial stops the run; an inconclusive probe does not.
+    if let PtraceProbe::Denied(note) = check_ptrace_capability() {
+        return error_result(name, &format!("Docker preflight failed: {}", note));
     }
 
     let dockerfile_dir = match locate_docker_dir() {
@@ -134,11 +143,25 @@ pub fn run_layer3_local(name: &str, dir: &Path) -> CheckResult {
         }
     }
 
-    // Load baseline + mutated scenario profiles.
-    let baseline = load_scenario_profile(out_dir.path(), "baseline");
-    let clock = load_scenario_profile(out_dir.path(), "clock");
-    let env = load_scenario_profile(out_dir.path(), "env");
-    let fuzz = load_scenario_profile(out_dir.path(), "fuzz");
+    // Load baseline + mutated scenario profiles. Any missing/unreadable log
+    // aborts with Verdict::Error rather than silently treating the scenario
+    // as empty (which would read as "no risk found" instead of "capture failed").
+    let baseline = match load_scenario_profile(out_dir.path(), "baseline") {
+        Ok(p) => p,
+        Err(e) => return error_result(name, &e),
+    };
+    let clock = match load_scenario_profile(out_dir.path(), "clock") {
+        Ok(p) => p,
+        Err(e) => return error_result(name, &e),
+    };
+    let env = match load_scenario_profile(out_dir.path(), "env") {
+        Ok(p) => p,
+        Err(e) => return error_result(name, &e),
+    };
+    let fuzz = match load_scenario_profile(out_dir.path(), "fuzz") {
+        Ok(p) => p,
+        Err(e) => return error_result(name, &e),
+    };
 
     // Diff each mutated scenario against its matching baseline, then classify.
     let mut findings: Vec<Finding> = Vec::new();

@@ -1,7 +1,8 @@
 # npm-pre-scan
 
 A unified npm supply-chain scanner covering metadata to dynamic condition mutation —
-implemented in Rust (Layers 0–1) and Docker + shell (Layers 2–3).
+implemented in Rust (Layers 0–1) and Docker + shell (Layers 2–3), producing a single
+aggregate risk score.
 
 The tool fills a gap in existing SOTA dynamic detection tools (MalOSS, OSCAR, DONAPI):
 they cover install/import/run-time observation but lack **active condition triggering**
@@ -18,9 +19,11 @@ Out of scope: VCS/CI/build-system compromise (not detectable by a package scanne
 
     Layer 0  Metadata check          [DONE]   static, no execution (Rust)
     Layer 1  Static analysis         [DONE]   static, no execution (Rust)
-    Layer 2  Dynamic — simple run    [DONE]   live Docker verified (strace + dnsmasq)
-    Layer 3  Dynamic — condition mut [TODO]   core contribution (libfaketime, env spoof, API fuzz)
-    Scoring  Aggregate risk score    [TODO]   cross-layer weighted aggregation
+    Layer 2  Dynamic — baseline diff [DONE]   live Docker verified (strace + dnsmasq)
+    Layer 3  Dynamic — condition mut [DONE]   live Docker verified (libfaketime, env spoof, API fuzz)
+    Scoring  Aggregate risk score    [DONE]   cross-layer weighted noisy-OR
+
+All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-verified.
 
 
 -------------------------------------------------------------------------------
@@ -29,7 +32,7 @@ Out of scope: VCS/CI/build-system compromise (not detectable by a package scanne
 
  ID  Attack vector                    Layer    Status
  --  -------------------------------- ------   ------
- A1  Typosquatting                    0        DONE — BLOCK (edit_dist=1 from popular pkg)
+ A1  Typosquatting                    0        DONE — BLOCK (edit_dist ≤1; homoglyph-folded)
  A2  Dependency Confusion             0        DONE — BLOCK (unscoped vs scoped namespace)
  A3  Account Hijacking                0        DONE — SUSPECT (maintainer change detection)
  A4  Combosquatting                   0        DONE — SUSPECT (popular-token + suspicious affix)
@@ -39,14 +42,13 @@ Out of scope: VCS/CI/build-system compromise (not detectable by a package scanne
  C1  Import-time execution            2        DONE — live BLOCK (import-phase side effects)
  C2  Slow exfiltration (DNS tunnel)   2        DONE — live BLOCK (encoded subdomain labels)
  C3  Hidden binary (.node addon)      2        DONE — live SUSPECT (native addon open)
- D1  Time Bomb (date/time-gated)      3        TODO
- D2  Environment-triggered            3        TODO
- D3  Trigger-on-use (API-gated)       3        TODO
- E1  Self-propagating worm            1+2      DONE — Layer 1 BLOCK (worm heuristic + IOC hash);
-                                               Layer 2 live BLOCK (worm-egress DNS)
+ D1  Time Bomb (date/time-gated)      3        DONE — live SUSPECT (clock scenario triggers egress)
+ D2  Environment-triggered            3        DONE — live SUSPECT (env scenario triggers egress)
+ D3  Trigger-on-use (API-gated)       3        DONE — live SUSPECT (fuzz scenario triggers egress)
+ E1  Self-propagating worm            1+2      DONE — Layer 1 BLOCK (heuristic + IOC); Layer 2 live BLOCK
 
-Coverage is considered complete when every in-scope vector is live-verified.
-D1–D3 are blocked on Layer 3 implementation.
+Every finding carries a "vector" tag (A1…E1, or "META" for heuristic metadata signals) so
+JSON consumers can map detections to the taxonomy.
 
 
 -------------------------------------------------------------------------------
@@ -55,119 +57,171 @@ D1–D3 are blocked on Layer 3 implementation.
 Runs on registry metadata only; nothing is downloaded or executed.
 
   typosquat       Levenshtein distance against ~1137 popular packages
-                  (data/top_packages.txt, embedded at compile time).
+                  (data/top_packages.txt, embedded at compile time). The name is
+                  lowercased and homoglyph-folded (Cyrillic/Greek confusables →
+                  ASCII) before comparison, so "lodаsh" (Cyrillic а) is caught.
                     distance=1, name>=5 chars  → BLOCK
                     distance=1, name<5 chars   → SUSPECT  (short-name guard)
                     distance=2                 → SUSPECT
+                  Envelope: ASCII + confusable-folded, distance ≤2.
 
   namespace       Unscoped name collides with a popular scoped package
-                  (e.g. "aws-sdk-client-s3" vs "@aws-sdk/client-s3").
-                                                → BLOCK
+                  (e.g. "aws-sdk-client-s3" vs "@aws-sdk/client-s3").   → BLOCK
 
   combosquat      Name contains a popular token AND a suspicious affix
-                  (e.g. "lodash-utils-fix").     → SUSPECT
+                  (e.g. "lodash-utils-fix").                            → SUSPECT
 
   age_downloads   Package age <7 days + weekly downloads ≥5× monthly average
-                  (minimum 1000/wk).             → SUSPECT
+                  (minimum 1000/wk).                                    → SUSPECT  (vector META)
 
-  maintainer      New maintainer(s) in the latest version relative to the
-                  first version, when the latest version shipped <30 days ago.
-                                                → SUSPECT
+  maintainer      New maintainer(s) in the latest version relative to the first
+                  version, when the latest version shipped <30 days ago. → SUSPECT
+                  (30-day window trades slow-hijack recall for lower FPs.)
 
-  signatures      Verifies the npm registry's ECDSA-P256 signature on the
-                  latest version (equivalent to `npm audit signatures`).
-                    signature missing           → SUSPECT
-                    signature invalid / no key  → BLOCK
+  signatures      Verifies the npm registry's ECDSA-P256 signature on the latest
+                  version (equivalent to `npm audit signatures`).       (vector META)
+                    signature missing          → SUSPECT
+                    signature invalid / no key → BLOCK
+                    keys unavailable (network) → INFO note (never false-BLOCKs)
 
 
 -------------------------------------------------------------------------------
  LAYER 1 — STATIC ANALYSIS  [DONE]
 -------------------------------------------------------------------------------
 Downloads and unpacks the package tarball (or reads a local directory);
-scans all .js / .cjs / .mjs / .ts / .tsx / .jsx files. No execution.
+recursively scans all .js / .cjs / .mjs / .ts / .tsx / .jsx files. No execution.
 
-  install_script     preinstall / install / postinstall present    → SUSPECT
+  install_script     preinstall / install / postinstall / prepare present  → SUSPECT
+                     (test/prepack/prepublishOnly are out of scope — not run
+                      at consumer install time.)
 
-  obfuscation        eval(Buffer.from(...,'base64'))                → BLOCK
-                     bare eval(), long hex, long base64            → SUSPECT
+  obfuscation        eval(Buffer.from(...,'base64'))                        → BLOCK
+                     bare eval(), long hex (8+ consecutive \xNN), long base64 → SUSPECT
+                     (base64 inside a data: URI and short ANSI escape runs
+                      are excluded to reduce false positives.)
 
-  suspicious_strings /etc/passwd, /etc/shadow, ~/.ssh              → BLOCK
-                     process.env, os.homedir()                     → SUSPECT
+  suspicious_strings /etc/passwd, /etc/shadow, ~/.ssh                       → BLOCK
+                     process.env, os.homedir()                             → SUSPECT
 
-  network_imports    require/import of axios, node-fetch, https,
-                     got, superagent, request                      → SUSPECT
+  network_imports    require/import of axios, node-fetch, cross-fetch, got,
+                     superagent, request, ws, socket.io, http(s)-proxy-agent,
+                     undici                                                → SUSPECT
+  shell_exfil        child_process exec/spawn of curl / wget / nc          → SUSPECT
 
-  dynamic_require    require(<variable>) — non-literal argument     → SUSPECT
+  dynamic_require    require(<variable>) — non-literal argument             → SUSPECT
 
-  version_diff       Diffs previous vs latest published tarball;
-                     newly-introduced lines only:
-                       eval(Buffer.from) / sensitive path          → BLOCK
-                       eval / network import / process.env         → SUSPECT
-                       worm propagation indicators                 → BLOCK
+  version_diff       Diffs previous vs latest published tarball; new lines only:
+                       eval(Buffer.from) / sensitive path                  → BLOCK
+                       eval / network import / process.env                 → SUSPECT
+                       worm propagation indicators                         → BLOCK (vector B3)
 
   worm_signature     Three-category heuristic + SHA-256 IOC lookup
                      (data/worm_iocs.txt, embedded at compile time):
-                       self_propagation   npm publish + _authToken → BLOCK
-                       credential_harvest TruffleHog / IMDS / creds→ BLOCK
-                       exfil_persistence  webhook.site / GH-API    → BLOCK
-                       ioc_hash           SHA-256 matches known IOC → BLOCK
-                       worm aggregate     ≥2 categories present    → BLOCK
+                       self_propagation   npm publish + _authToken        → BLOCK
+                       credential_harvest TruffleHog / IMDS / creds        → BLOCK
+                       exfil_persistence  webhook.site / GH-API            → BLOCK
+                       ioc_hash           SHA-256 matches known IOC        → BLOCK
+                       worm aggregate     ≥2 categories present            → BLOCK (vector E1)
 
-Scoring per layer:  BLOCK=50, SUSPECT=15, INFO=2; weighted sum capped at 100.
+Per-layer scoring:  BLOCK=50, SUSPECT=15, INFO=2; weighted sum capped at 100.
 
 
 -------------------------------------------------------------------------------
- LAYER 2 — DYNAMIC ANALYSIS  [DONE — live Docker verified]
+ LAYER 2 — DYNAMIC ANALYSIS (BASELINE SUBTRACTION)  [DONE — live Docker verified]
 -------------------------------------------------------------------------------
-Architecture: dumb container (raw logs) + smart Rust (parse + classify).
-Network model: --network=none + in-container dnsmasq sinkhole (every DNS query
-name logged; no actual egress leaves the host).
+Architecture: dumb container (raw logs) + smart Rust (parse + diff + classify).
+Network model: --network=none + in-container dnsmasq sinkhole, restarted per run
+(every DNS query name logged; no actual egress leaves the host).
 
-Container produces:
-  /out/strace_install.log  — strace of npm install phase
-  /out/strace_import.log   — strace of node require() phase
-  /out/dns.log             — dnsmasq query log (all DNS query names)
+To cancel npm/node's OWN toolchain reads (.npmrc, /etc/passwd) at the source,
+each phase is traced TWICE — an unmutated baseline and the real run — and the
+Rust side diffs real-vs-baseline (reusing Layer 3's diff engine) before
+classifying. Only *package-attributable* behavior survives the diff, so a benign
+package is a genuine PASS (no more over-approximation to BLOCK on npm's own reads).
 
-Detection rules (src/layer2/classify.rs):
+Container produces (4 runs, each with its own dnsmasq log):
+  strace_install_base.log / _real.log   — npm install --ignore-scripts vs scripts-enabled
+  strace_import_base.log  / _real.log   — node -e "0" vs node -e require(pkg)
+  dns_install_base/real.log, dns_import_base/real.log
+
+Both install runs use the SAME working dir (reset to pristine between them) so
+CWD-relative reads (.npmrc, package.json, node_modules/…) are byte-identical and
+cancel in the diff.
+
+Detection rules (applied to the diff, src/layer2/classify.rs):
 
   E1 worm egress        DNS/connect to registry.npmjs.org, api.github.com,
                         webhook.site, 169.254.169.254               → BLOCK
-  B1 install script     child process spawned during install phase;
+  B1 install script     unexpected child process during install phase;
                         +network/sensitive path access               → SUSPECT/BLOCK
   sensitive file read   /etc/passwd, ~/.ssh, .npmrc, .aws/creds     → BLOCK
-  C1 import side effect network/process/file-write during import phase
-                                                                    → SUSPECT/BLOCK
-  C2 DNS tunneling      many distinct qnames or encoded labels
-                        (long base32/hex-looking subdomains)        → SUSPECT/BLOCK
+  C1 import side effect network/process/file activity during import phase → SUSPECT/BLOCK
+  C2 DNS tunneling      many distinct qnames or encoded labels      → SUSPECT/BLOCK
   C3 native addon       *.node file opened/loaded at import         → SUSPECT
 
-Implementation note: musl/alpine node emits the plain `open` syscall (not
-`openat`). The strace filter includes both (`open,openat,openat2`) and the Rust
-parser handles both forms — omitting either would blind C3 and sensitive-read
-detection on alpine containers.
+Findings from both phases are de-duplicated. Implementation note: musl/alpine node
+emits the plain `open` syscall (not `openat`); the strace filter and parser handle
+both, or C3 + sensitive-read detection would be blind on alpine.
+
+Known limitation: a payload that ONLY reads .npmrc (credential theft) at install
+cancels against npm's own .npmrc read — Layer 1 static (suspicious_strings) still
+flags .npmrc references in the source.
 
 
 -------------------------------------------------------------------------------
- LAYER 3 — CONDITION MUTATION  [TODO — core research contribution]
+ LAYER 3 — CONDITION MUTATION  [DONE — core research contribution, live-verified]
 -------------------------------------------------------------------------------
 Extends the Layer 2 container with active mutation to trigger condition-gated
-payloads that existing tools (MalOSS, OSCAR, DONAPI) do not reach.
+payloads existing tools (MalOSS, OSCAR, DONAPI) do not reach. Runs a clean
+baseline plus three mutated scenarios, then diffs each mutated profile against the
+baseline and classifies only the mutation-induced (new) events.
 
-  Scenario 1 — Clock manipulation
-    libfaketime offsets: +30d / +90d / +180d; re-runs install + import.
-    Detects: D1 time-bomb payloads.
+  baseline        clean env, real clock, plain require() — the reference profile.
 
-  Scenario 2 — Environment spoofing
-    HOME=/home/developer, USER=dev, strip CI env vars (CI, GITHUB_ACTIONS, …),
-    change hostname; re-runs install + import.
-    Detects: D2 environment-triggered payloads (CI evasion).
+  clock (D1)      libfaketime (LD_PRELOAD) with an absolute future FAKETIME
+                  (~+90d). Confirmed working with musl-linked node on
+                  node:lts-alpine, including through the sh→node postinstall chain.
+                  Detects: time-bomb payloads.
 
-  Scenario 3 — API fuzzing
-    Auto-detect all public exports; invoke each with dummy args
-    (string / number / object / null / undefined).
-    Detects: D3 trigger-on-use (API-call-gated) payloads.
+  env (D2)        strip CI signals (CI, GITHUB_ACTIONS, CONTINUOUS_INTEGRATION),
+                  set HOME=/home/developer, USER=dev.
+                  Detects: environment-triggered (CI-evasion) payloads.
 
-Output: per-scenario behavior diff vs Layer 2 baseline (new events only).
+  fuzz (D3)       docker/fuzz_exports.js auto-enumerates public exports (module
+                  fn + object keys + one level of nesting) and invokes each with a
+                  dummy-arg matrix, guarded and async-flushed.
+                  Detects: trigger-on-use (API-call-gated) payloads.
+
+Each mutated scenario's new-events diff is classified and tagged with its scenario
+vector (D1/D2/D3). Out of scope: network-time bombs (NTP / HTTP Date header) — the
+time source and callback are both blocked under --network=none.
+
+
+-------------------------------------------------------------------------------
+ RISK-SCORE AGGREGATION  [DONE]
+-------------------------------------------------------------------------------
+src/report.rs combines the per-layer CheckResults into one RiskReport (a pure
+function; no layer logic changed):
+
+  risk_score   weighted noisy-OR:  1 − Π(1 − wᵢ·scoreᵢ/100)  over layers that ran
+               (Error layers contribute nothing). Weights [L0,L1,L2,L3]=[1,1,1,1];
+               Layer 2 is a first-class trusted layer now that baseline subtraction
+               makes it precise. Rounded to 2 decimals.
+  verdict      worst-of the layers that ran (BLOCK > SUSPECT > ERROR > PASS).
+  detections   per-layer list of "vector: check (message)" summaries.
+  layer_status per-layer: "ran" | "skipped" (L1 when L0 BLOCK short-circuits) |
+               "not_run" (absent / Docker unavailable) | "error".
+  evidence     per-layer list of the exact new events (dns/connect/file/proc) that
+               Layer 2/3's diff-based findings fired on (shown under --verbose).
+
+Example (`--full <name>` JSON):
+    {
+      "package": "name", "risk_score": 0.82, "verdict": "BLOCK",
+      "detections": { "layer_0": ["A1: typosquat (…)"], "layer_1": ["B2: obfuscation (…)"],
+                      "layer_2": [], "layer_3": ["D1: timebomb (…)"] },
+      "layer_status": ["ran","ran","ran","ran"],
+      "evidence": { "layer_0": [], "layer_1": [], "layer_2": [], "layer_3": ["dns:evil.example.com"] }
+    }
 
 
 -------------------------------------------------------------------------------
@@ -178,15 +232,25 @@ Build:
     cargo build --release    # release: target/release/npm-pre-scan
 
 Usage:
-    npm-pre-scan [--json] [--no-color] <pkg> [<pkg> ...]
-    npm-pre-scan --local <dir>     # Layer 1 static scan of a local directory
-    npm-pre-scan --layer2 <dir>    # Layer 2 dynamic analysis (requires Docker)
+    npm-pre-scan [--json] [--no-color] [-v|--verbose] <pkg> [<pkg> ...]
+    npm-pre-scan --local  <dir>          # Layer 1 static scan of a local directory
+    npm-pre-scan --layer2 <dir>          # Layer 2 dynamic analysis (requires Docker)
+    npm-pre-scan --layer3 <dir>          # Layer 3 condition mutation (requires Docker)
+    npm-pre-scan --full   <name|dir>     # full pipeline + aggregate risk report
+
+Modes:
+    <pkg> …            registry scan: Layer 0, then Layer 1 (skips L1 if L0 BLOCKs);
+                       emits an aggregate RiskReport (layer_2/layer_3 = not_run).
+    --full <name>      the unified single-tool path: resolves the name, downloads
+                       the tarball once, and runs ALL four layers → RiskReport.
+    --full <dir>       full pipeline (L1+L2+L3) on a local directory (Layer 0 = not_run,
+                       no registry identity).
+    --local/--layer2/--layer3 <dir>   run a single layer on a local directory.
 
 Flags:
     --json        emit raw JSON instead of the human-readable report
     --no-color    disable ANSI color output
-    --local DIR   Layer 1 only on a local directory (no tarball download)
-    --layer2 DIR  Layer 2 dynamic analysis on a local directory
+    -v, --verbose per-layer progress + per-scenario diff evidence
 
 Exit codes (worst verdict across all packages / layers):
     0 = PASS    1 = SUSPECT    2 = BLOCK    3 = ERROR
@@ -194,13 +258,16 @@ Exit codes (worst verdict across all packages / layers):
 Examples:
     npm-pre-scan lodash                       # registry scan: Layer 0 then 1
     npm-pre-scan --no-color expresss          # typosquat of "express" → BLOCK
-    npm-pre-scan --local ./my-package         # offline static scan
-    npm-pre-scan --layer2 ./my-package        # dynamic sandbox scan
-    npm-pre-scan --json react vue             # JSON array output
+    npm-pre-scan --full ./my-package          # local full pipeline (L1+L2+L3)
+    npm-pre-scan --full some-package           # registry full pipeline (all 4 layers)
+    npm-pre-scan -v --full ./my-package        # + per-scenario diff evidence
+    npm-pre-scan --json react vue             # JSON array of RiskReports
 
-Docker prerequisite (Layer 2):
-    The container image is built automatically on first `--layer2` run.
-    Requires: docker CLI accessible, --cap-add=SYS_PTRACE capability available.
+Docker prerequisite (Layers 2/3, --full):
+    The container image is built automatically on first use.
+    Requires: docker CLI accessible, --cap-add=SYS_PTRACE capability available
+    (checked up front; a confirmed denial fails fast rather than silently
+     producing empty logs).
     WSL2 note: `sudo service docker start` (no systemd by default).
 
 
@@ -211,24 +278,24 @@ Docker prerequisite (Layer 2):
     data/top_scoped_packages.txt   94 popular scoped packages (namespace ref)
     data/worm_iocs.txt             SHA-256 IOC hashes for known worm artifacts
 
-All three are embedded into the binary at compile time via include_str!.
-One entry per line; blank lines and '#' comments are ignored. Add entries and
-rebuild to extend coverage.
+All three are embedded into the binary at compile time via include_str! and carry a
+provenance header (source + date). One entry per line; blank lines and '#' comments
+are ignored. Add entries and rebuild to extend coverage.
 
 
 -------------------------------------------------------------------------------
  TESTING
 -------------------------------------------------------------------------------
-    cargo test                  # offline suite (no network, no Docker)
-    cargo test -- --ignored     # live Layer 2 Docker tests (requires Docker)
+    cargo test                                     # offline suite (no network, no Docker)
+    cargo test --no-fail-fast -- --ignored         # live Docker tests (requires Docker)
 
 Test counts (current):
-    97 offline tests:
-      - unit tests (Levenshtein, namespace, scoring, Layer 1 static checks, …)
-      - integration tests against on-disk dummy packages (Layer 0/1)
-      - Layer 2 fixture-based classify tests (offline, no Docker)
-    5  live Docker tests (#[ignore]d, require Docker):
-      - B1 install_time, C1 import_time, C2 slow_exfil, C3 binary, E1 worm_egress
+    164 offline tests — unit (Levenshtein, namespace, scoring, aggregation, Layer 1
+        static checks, Layer 2/3 diff+classify, homoglyph fold, FP-controls, …),
+        Layer 0/1 dummy integration, Layer 2 fixture classify, Layer 3 diff.
+    12  live Docker tests (#[ignore]d, require Docker):
+        5 layer2_dynamic (B1/C1/C2/C3/E1), 4 layer3_dynamic (D1/D2/D3 + benign control),
+        2 full_pipeline (timebomb + benign), 1 full_registry (registry-name smoke).
 
 Dummy packages (gitignored; payload-free; never published):
 
@@ -240,51 +307,65 @@ Dummy packages (gitignored; payload-free; never published):
     dummy_malicious_update  Layer 1 (B3)  VERIFIED  BLOCK (version diff)
     dummy_shai_hulud/clean  Layer 1 (E1)  VERIFIED  PASS   (control)
     dummy_shai_hulud/infect Layer 1+2(E1) VERIFIED  BLOCK  (static + live worm-egress)
-    dummy_install_time      Layer 2 (B1)  VERIFIED  BLOCK  (live Docker)
-    dummy_import_time       Layer 2 (C1)  VERIFIED  BLOCK  (live Docker)
-    dummy_slow_exfil        Layer 2 (C2)  VERIFIED  BLOCK  (live Docker)
-    dummy_binary            Layer 2 (C3)  VERIFIED  SUSPECT (live Docker)
-    dummy_timebomb          Layer 3 (D1)  TODO
-    dummy_env_triggered     Layer 3 (D2)  TODO
-    dummy_api_triggered     Layer 3 (D3)  TODO
+    dummy_install_time      Layer 2 (B1)  VERIFIED  BLOCK  (live Docker, via diff)
+    dummy_import_time       Layer 2 (C1)  VERIFIED  BLOCK  (live Docker, via diff)
+    dummy_slow_exfil        Layer 2 (C2)  VERIFIED  BLOCK  (live Docker, via diff)
+    dummy_binary            Layer 2 (C3)  VERIFIED  SUSPECT (live Docker, via diff)
+    dummy_timebomb          Layer 3 (D1)  VERIFIED  SUSPECT (live Docker; clock scenario)
+    dummy_env_triggered     Layer 3 (D2)  VERIFIED  SUSPECT (live Docker; env scenario)
+    dummy_api_triggered     Layer 3 (D3)  VERIFIED  SUSPECT (live Docker; fuzz scenario)
+    dummy_benign_l3         Layer 2+3     VERIFIED  PASS   (precision control — no false positives)
 
 
 -------------------------------------------------------------------------------
  PROJECT LAYOUT
 -------------------------------------------------------------------------------
     src/
-      main.rs              CLI, report formatting, exit codes
+      main.rs              CLI, report formatting, --verbose, exit codes
       lib.rs               module declarations + public re-exports
+      docker.rs            shared docker_available() + SYS_PTRACE preflight probe
       checker.rs           run_layer0() — orchestrates Layer 0 checks
       registry.rs          npm registry + downloads API; signing keys
-      typosquat.rs         levenshtein() + check_typosquat()
+      typosquat.rs         levenshtein() + homoglyph fold + check_typosquat()
       age_check.rs         package age + download-spike detection
       maintainer.rs        first-vs-latest maintainer-set comparison
       signatures.rs        ECDSA-P256 registry signature verification
       namespace.rs         unscoped-vs-scoped namespace-conflict detection
       combosquat.rs        popular-token + suspicious-affix heuristic (A4)
       models.rs            Verdict enum, Finding, CheckResult, scoring
+      report.rs            RiskReport, aggregate(), run_full_local/registry(), LayerStatus
       layer1/
-        mod.rs             run_layer1() / run_layer1_local() / run_version_diff_local()
-        tarball.rs         tarball URL resolution + download/extract
-        checks.rs          five static source checks
+        mod.rs             run_layer1() / _local() / _extracted() / run_version_diff_local()
+        tarball.rs         tarball URL resolution + download/extract (pub)
+        checks.rs          static source checks (install/obfuscation/strings/network/shell/require)
         version_diff.rs    previous-vs-latest tarball line diff
         worm_signature.rs  three-category worm heuristic + SHA-256 IOC lookup (E1)
       layer2/
-        mod.rs             run_layer2_local() — Docker orchestration
+        mod.rs             run_layer2_local() — baseline-subtraction Docker orchestration
         profile.rs         parse_strace() + parse_dns() → Layer2Profile (pure)
         classify.rs        classify(&Layer2Profile) → Vec<Finding> (pure)
+      layer3/
+        mod.rs             run_layer3_local() — mutation-scenario Docker orchestration
+        diff.rs            diff_profiles[_phase]() + evidence_lines() (pure)
+        classify.rs        classify_scenario() — reuses layer2::classify, tags D1/D2/D3
     docker/
-      Dockerfile           node:lts-alpine + strace + dnsmasq
-      run_layer2.sh        container entrypoint (raw log capture)
+      Dockerfile           node:lts-alpine + strace + dnsmasq + libfaketime
+      run_layer2.sh        Layer 2 entrypoint (baseline + real, per-run dns)
+      run_layer3.sh        Layer 3 entrypoint (baseline + clock/env/fuzz scenarios)
+      fuzz_exports.js      D3 API-fuzz harness
     data/                  embedded reference lists (see DATA FILES above)
     tests/
-      layer0_dummy.rs      integration: A1/A2/A3/A4 on-disk dummies
+      layer0_dummy.rs      integration: A1/A2/A4 on-disk dummies (+ A3 fixture)
       layer1_dummy.rs      integration: B2/B3 on-disk dummies
       layer1_worm.rs       integration: E1 static detection
       layer2_classify.rs   offline: classify() fixture tests (no Docker)
       layer2_dynamic.rs    live:    Docker-gated Layer 2 tests (#[ignore])
-      fixtures/layer2/     hand-crafted strace/dns log fixtures per scenario
+      layer3_diff.rs       offline: diff + classify_scenario tests
+      layer3_dynamic.rs    live:    Docker-gated Layer 3 tests (#[ignore])
+      report_aggregate.rs  offline: aggregation / risk-score / layer_status tests
+      full_pipeline.rs     live:    --full local pipeline (#[ignore])
+      full_registry.rs     live:    --full registry-name smoke (#[ignore])
+      fixtures/            hand-crafted strace/dns log fixtures (layer2 + layer3)
     dummy_packages/        per-vector test packages (gitignored; never published)
 
 
@@ -296,5 +377,5 @@ Dummy packages (gitignored; payload-free; never published):
     Zheng et al., "OSCAR", ASE 2024 — comparison target; basis for Layer 3 gap
     Duan et al., "MalOSS", NDSS 2021 — comparison target
     Huang et al., "DONAPI", USENIX Security 2024 — comparison target
-    OSSF malicious-packages (GitHub) — candidate evaluation dataset
+    OSSF malicious-packages (GitHub) — candidate evaluation dataset (evaluation TBD)
     npm registry signatures: docs.npmjs.com/about-registry-signatures

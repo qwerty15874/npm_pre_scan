@@ -12,6 +12,7 @@ fn finding(severity: &str, message: &str, file: &str, prev: &str, latest: &str) 
     let mut m = Map::new();
     m.insert("check".into(), Value::String("version_diff".into()));
     m.insert("severity".into(), Value::String(severity.to_string()));
+    m.insert("vector".into(), Value::String("B3".into()));
     m.insert("message".into(), Value::String(message.to_string()));
     m.insert("file".into(), Value::String(file.to_string()));
     m.insert("prev_version".into(), Value::String(prev.to_string()));
@@ -226,5 +227,21 @@ mod tests {
         let prev = "x\ny".to_string();
         let latest = "x\ny";
         assert_eq!(added_text(Some(&prev), latest), "");
+    }
+
+    // 3a: every version_diff finding must carry vector=B3.
+    #[test]
+    fn diff_findings_carry_b3_vector() {
+        let mut latest_files = HashMap::new();
+        latest_files.insert(
+            "index.js".to_string(),
+            "eval(Buffer.from('cGF5bG9hZA==','base64'));".to_string(),
+        );
+        let prev_files = HashMap::new();
+        let findings = diff_findings(&prev_files, &latest_files, "1.0.0", "1.0.1");
+        assert!(!findings.is_empty());
+        assert!(findings
+            .iter()
+            .all(|f| f.get("vector").and_then(|v| v.as_str()) == Some("B3")));
     }
 }

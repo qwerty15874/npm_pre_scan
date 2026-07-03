@@ -56,6 +56,7 @@ pub fn check_combosquat(name: &str, top_packages: &[String]) -> Option<Map<Strin
 
     let mut f = Map::new();
     f.insert("severity".into(), Value::String("SUSPECT".into()));
+    f.insert("vector".into(), Value::String("A4".into()));
     f.insert(
         "matched_popular".into(),
         Value::String(matched_popular.to_string()),
@@ -97,6 +98,7 @@ mod tests {
             f.get("matched_popular").and_then(|v| v.as_str()),
             Some("lodash")
         );
+        assert_eq!(f.get("vector").and_then(|v| v.as_str()), Some("A4"));
     }
 
     #[test]

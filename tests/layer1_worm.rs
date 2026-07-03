@@ -35,6 +35,15 @@ fn e1_shai_hulud_static_blocks() {
         "Expected a worm_signature finding with category='ioc_hash'; findings: {:?}",
         result.findings
     );
+    assert!(
+        result
+            .findings
+            .iter()
+            .filter(|f| f.get("check").and_then(|v| v.as_str()) == Some("worm_signature"))
+            .all(|f| f.get("vector").and_then(|v| v.as_str()) == Some("E1")),
+        "Every worm_signature finding must carry vector=E1; findings: {:?}",
+        result.findings
+    );
 }
 
 // E1: infected fixture must include a self_propagation finding.
@@ -81,6 +90,16 @@ fn e1_worm_via_update_blocks() {
             .iter()
             .any(|f| f.get("severity").and_then(|v| v.as_str()) == Some("BLOCK")),
         "Expected at least one BLOCK finding from worm-via-update diff; got: {:?}",
+        findings
+    );
+    // This path runs through version_diff (not worm_signature), so it is
+    // tagged B3 (malicious version update) even though the injected content
+    // happens to be worm-class — the check name and taxonomy vector track the
+    // *detection mechanism* (a diff against the previous version), not the
+    // payload's ultimate classification.
+    assert!(
+        findings.iter().all(|f| f.get("vector").and_then(|v| v.as_str()) == Some("B3")),
+        "worm-via-update diff findings must carry vector=B3; got: {:?}",
         findings
     );
 }

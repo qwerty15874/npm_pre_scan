@@ -1,3 +1,11 @@
+# Popular scoped npm package names, used to detect namespace-confusion attacks
+# (src/namespace.rs): an unscoped package name that flattens to match one of
+# these (e.g. `aws-sdk-client-s3` vs `@aws-sdk/client-s3`) is a likely
+# dependency-confusion/namespace-squatting attempt.
+# Lines starting with # are comments (skipped by load_top_scoped_packages()).
+#
+# Source: curated snapshot of popular scoped npm packages (approx. 94 names).
+# Last reviewed/updated: 2026-07-02.
 @angular/core
 @angular/common
 @angular/router

@@ -45,6 +45,13 @@ fn scenarios(findings: &[serde_json::Map<String, serde_json::Value>]) -> Vec<&st
         .collect()
 }
 
+fn vectors(findings: &[serde_json::Map<String, serde_json::Value>]) -> Vec<&str> {
+    findings
+        .iter()
+        .filter_map(|f| f.get("vector").and_then(|v| v.as_str()))
+        .collect()
+}
+
 // ── D1: time-bomb (clock scenario) ──────────────────────────────────────────
 
 #[test]
@@ -66,6 +73,8 @@ fn d1_timebomb_clock_scenario_flags_new_dns() {
     assert!(!findings.is_empty(), "Expected findings for D1 clock scenario");
     assert!(checks(&findings).iter().all(|&c| c == "timebomb"));
     assert!(scenarios(&findings).iter().all(|&s| s == "D1"));
+    // 3h: vector must be the scenario code (D1), not the reused L2 vector.
+    assert!(vectors(&findings).iter().all(|&v| v == "D1"));
     assert!(
         sev(&findings).iter().any(|&s| s == "SUSPECT" || s == "BLOCK"),
         "Expected SUSPECT or BLOCK; severities: {:?}",
@@ -92,6 +101,7 @@ fn d2_env_triggered_scenario_flags_new_dns() {
     assert!(!findings.is_empty(), "Expected findings for D2 env scenario");
     assert!(checks(&findings).iter().all(|&c| c == "env_triggered"));
     assert!(scenarios(&findings).iter().all(|&s| s == "D2"));
+    assert!(vectors(&findings).iter().all(|&v| v == "D2"));
     assert!(
         sev(&findings).iter().any(|&s| s == "SUSPECT" || s == "BLOCK"),
         "Expected SUSPECT or BLOCK; severities: {:?}",
@@ -124,6 +134,7 @@ fn d3_trigger_on_use_fuzz_scenario_flags_new_dns() {
     assert!(!findings.is_empty(), "Expected findings for D3 fuzz scenario");
     assert!(checks(&findings).iter().all(|&c| c == "trigger_on_use"));
     assert!(scenarios(&findings).iter().all(|&s| s == "D3"));
+    assert!(vectors(&findings).iter().all(|&v| v == "D3"));
     assert!(
         sev(&findings).iter().any(|&s| s == "SUSPECT" || s == "BLOCK"),
         "Expected SUSPECT or BLOCK; severities: {:?}",

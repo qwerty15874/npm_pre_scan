@@ -1,5 +1,5 @@
 # CLAUDE.md
-> Last updated: 2026-07-02 (v12)
+> Last updated: 2026-07-02 (v13)
 
 ---
 
@@ -10,7 +10,7 @@ Pipeline: package name → Layer 0 → Layer 1 → Layer 2 → Layer 3 → risk 
 
 Layer 0  [████████████████████] DONE   Metadata check        (no execution, Rust)
 Layer 1  [████████████████████] DONE   Static analysis       (no execution, Rust)
-Layer 2  [████████████████████] DONE   Dynamic — static + live Docker verified
+Layer 2  [████████████████████] DONE   Dynamic — baseline-subtraction diff, live Docker verified
 Layer 3  [████████████████████] DONE   Dynamic — condition mutation, live Docker verified
 Scoring  [████████████████████] DONE   Aggregate risk score (noisy-OR, --full pipeline)
 ```
@@ -104,6 +104,38 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 - Comparison targets: OSCAR (ASE 2024), MalOSS (NDSS 2021), DONAPI (USENIX 2024).
 - Ladisa 107 vectors → explicitly scoped to npm-consumer-detectable vectors.
 - Both core contributions emphasized: (1) unified single tool, (2) Layer 3 condition mutation.
+
+### v13: Post-v12 hardening revision — flow, precision, coverage, visibility (2026-07-02)
+Driven by a 3-agent audit; prioritized flow → visibility → detection coverage → deferred compromises.
+Planning Fable, coding Sonnet (per-phase, reviewed between), docs Fable. Offline **164 passed**; live
+Docker **12/12** (5 layer2_dynamic + 4 layer3_dynamic + 2 full_pipeline + 1 full_registry).
+- **Phase 1 — execution flow**: `run_full_registry(name)` + `--full` now accepts **name OR dir** — the
+  registry name path resolves → downloads ONCE → runs all four layers (the true "unified single tool").
+  `tarball::download_and_extract` made pub; `run_layer1_extracted` factored (no double download).
+  Silent-failure fixes: missing/unreadable Layer 2/3 logs → `Verdict::Error` (was `unwrap_or_default`);
+  signature key-fetch failure → INFO note (was silent None). Shared `src/docker.rs`
+  (`docker_available` + SYS_PTRACE preflight). Exit-code mapping consolidated via `exit_code_for`.
+- **Phase 2 — Layer 2 baseline subtraction (the deep v10 compromise)**: `run_layer2.sh` now traces
+  baseline + real per phase (install `--ignore-scripts` vs scripts; import `node -e 0` vs require),
+  same `/work` reset pristine between installs so CWD-relative reads cancel; `mod.rs` diffs
+  real-vs-baseline via `diff_profiles_phase` then classifies + dedups. npm's `.npmrc`//etc/passwd noise
+  cancels → **benign packages are a true PASS**. Consequently `report.rs` **removed the L2 SUSPECT cap
+  and restored L2 weight to 1.0** (canonical example re-based 0.82 → 1.00). `diff.rs` gained
+  `diff_profiles_phase` (back-compat) + normalization of `.npm/_logs`/lockfile names.
+  ⚠ Live verification caught a path-asymmetry bug (baseline in `/work_base` vs real in `/work` left
+  `/work/.npmrc` uncancelled → benign BLOCK); fixed by using the same `/work` for both.
+- **Phase 3 — detection coverage**: `vector` tag on every L0/L1 finding (A1–E1 / META); network-import
+  set broadened (ws, socket.io, http(s)-proxy-agent, undici) + new `shell_exfil` (child_process
+  curl/wget/nc); `prepare` lifecycle hook; obfuscation FP reduction (data: URI exclusion, hex 4→8
+  consecutive) with FP-control tests; typosquat homoglyph folding (Cyrillic/Greek confusables → ASCII,
+  no new dep); worm-IOC + data-file provenance headers; L2 finding dedup; L3 `vector` set to D1/D2/D3.
+- **Phase 4 — visibility**: `--verbose`/`-v` (per-layer progress + per-scenario diff `evidence` surfaced
+  on findings and in the report); `RiskReport.layer_status` [ran|skipped|not_run|error]; removed the
+  unused tcpdump/`capture.pcap` capture from both docker scripts.
+- **Phase 5 — docs**: README rewritten to current reality (was stale: L3/scoring/D1–D3 "TODO");
+  this v13 entry; heuristic thresholds documented. Evaluation harness remains deferred (TBD).
+- **Known follow-ups (not bugs)**: 3 minor clippy style nits (manual char-cmp, match→?, if-let→unwrap_or_default);
+  working-tree CRLF on some .rs/.txt (git `* text=auto` normalizes on commit; .sh verified LF).
 
 ### v12: Risk-score aggregation complete — unified single tool (2026-07-02)
 - **Final build task done**: `src/report.rs` aggregates the four layers' `CheckResult`s into one
@@ -263,13 +295,15 @@ data/top_packages.txt        — embedded at compile time
 data/top_scoped_packages.txt — embedded at compile time
 
 Binary:
-  npm-pre-scan [--json] [--no-color] <pkg> [<pkg>...]
-  npm-pre-scan --local <dir>    (Layer 1 only on local dir)
-  npm-pre-scan --layer2 <dir>   (Layer 2 dynamic analysis — requires Docker)
-  npm-pre-scan --layer3 <dir>   (Layer 3 condition mutation — requires Docker)
-  npm-pre-scan --full <dir>     (full pipeline L1+L2+L3 → aggregate risk report; requires Docker)
+  npm-pre-scan [--json] [--no-color] [-v|--verbose] <pkg> [<pkg>...]
+  npm-pre-scan --local <dir>       (Layer 1 only on local dir)
+  npm-pre-scan --layer2 <dir>      (Layer 2 dynamic analysis — requires Docker)
+  npm-pre-scan --layer3 <dir>      (Layer 3 condition mutation — requires Docker)
+  npm-pre-scan --full <name|dir>   (full pipeline → aggregate risk report; requires Docker)
+                                    <name>: L0+L1+L2+L3 (download once); <dir>: L1+L2+L3
   exit 0=PASS  1=SUSPECT  2=BLOCK  3=ERROR
-  (name scans also emit the aggregate RiskReport: L0+L1, layer_2/layer_3 empty)
+  (name scans also emit the aggregate RiskReport: L0+L1, layer_2/layer_3 not_run)
+  (-v/--verbose: per-layer progress + per-scenario diff evidence)
 
 Severity rules:
   typosquat distance=1 (name ≥5 chars)               → BLOCK
@@ -349,15 +383,21 @@ Files:
   tests/layer2_dynamic.rs     — 5 Docker-gated tests (#[ignore]d)
   CLI: npm-pre-scan --layer2 <dir>   exit 0/1/2/3
 
-Live-verified (2026-07-01, WSL2/Ubuntu 26.04 + Docker 29.1.3): all 5 Docker-gated tests in
-tests/layer2_dynamic.rs pass in real containers — B1/C1/C2/C3 → BLOCK, E1 → BLOCK — each via its
-intended vector (B1 install_script_exec, C1 import_side_effect, C2 dns_tunneling, C3 native_addon,
-E1 worm_egress api.github.com).  Run: `cargo test -- --ignored`.
+BASELINE SUBTRACTION (v13): each phase is traced TWICE — an unmutated baseline and the real run —
+and mod.rs diffs real-vs-baseline (reusing layer3::diff::diff_profiles_phase) before classifying, so
+npm/node's own toolchain reads (.npmrc, /etc/passwd) cancel and only package-attributable behavior
+survives. Four runs: install {base=`npm install --ignore-scripts`, real=scripts-enabled} on the SAME
+`/work` (reset pristine between so CWD-relative reads cancel), import {base=`node -e "0"`, real=require}
+sharing `/work`. Each run has its own per-run dnsmasq log. Findings de-duplicated. This makes Layer 2
+PRECISE at the source (a benign package is a true PASS), superseding v10's over-approximation.
 
-Known limitation (precision): the install phase also captures npm's own baseline reads (.npmrc, and
-os.homedir()'s /etc/passwd access) as sensitive_file_read, so verdicts over-approximate toward BLOCK
-for any package that runs `npm install`. Layer 2 does no baseline subtraction — removing this
-toolchain noise is exactly what Layer 3's behavior-diff-vs-baseline is designed to do.
+Live-verified (2026-07-02, WSL2/Ubuntu 26.04 + Docker 29.1.3): all 5 Docker-gated tests in
+tests/layer2_dynamic.rs pass through the baseline diff — B1/C1/C2/C3/E1 fire via their intended
+vectors on the package's own behavior; dummy_benign_l3 → PASS. Run: `cargo test --no-fail-fast -- --ignored`.
+
+Residual limitation: a payload that ONLY reads .npmrc at install cancels against npm's own .npmrc read
+(Layer 1 static suspicious_strings still flags .npmrc references in source). Network-time bombs
+(NTP/HTTP Date) remain out of scope under --network=none.
 ```
 
 ### Layer 3 — DONE (★ core contribution, static + live Docker verified)
@@ -408,21 +448,25 @@ API fuzzer is best-effort (exports needing specific arg shapes/constructors may 
 ### Risk-score aggregation — DONE (offline + live Docker verified)
 ```
 src/report.rs — pure aggregation over existing layer CheckResults (no layer logic changed):
-  RiskReport { package, risk_score: f64, verdict, detections: {layer_0..layer_3: [String]} }
+  RiskReport { package, risk_score: f64, verdict, detections, layer_status: [LayerStatus;4], evidence }
   aggregate(pkg, [Option<&CheckResult>; 4]) -> RiskReport
-  run_full_local(name, dir) -> RiskReport   (L1_local + L2 + L3, aggregated; layer_0 empty for local)
+  run_full_local(name, dir) -> RiskReport    (L1_local + L2 + L3; layer_0 not_run for local)
+  run_full_registry(name)   -> RiskReport    (L0 + download-once + L1 + L2 + L3 — unified single tool)
 
 Score: weighted NOISY-OR  risk_score = 1 − ∏(1 − wᵢ·scoreᵢ/100)  over layers that ran & verdict≠Error.
-  Weights [L0,L1,L2,L3] = [1.0, 1.0, 0.5, 1.0]. Layer 2 down-weighted 0.5 (over-approximation).
+  Weights [L0,L1,L2,L3] = [1.0, 1.0, 1.0, 1.0]. (v13: L2 weight restored to 1.0 and the SUSPECT
+  verdict-cap REMOVED — Layer 2's baseline subtraction makes it precise, so it is a first-class
+  trusted layer that can force BLOCK on genuine package-attributable egress/credential-theft.)
   Rounded to 2 dp; an Error layer (e.g. Docker absent) contributes nothing to risk.
-Verdict: worst-of layers (BLOCK>SUSPECT>ERROR>PASS), BUT Layer 2 is CAPPED at SUSPECT — L2's
-  documented npm-baseline noise (.npmrc//etc/passwd reads) can raise suspicion but never alone force
-  BLOCK; BLOCK must come from L0/L1/L3. All L2 findings still appear in detections + risk_score.
-detections: each Finding → "{vector}: {check} ({message})" (or "{check}: {message}" if no vector).
+Verdict: worst-of layers that ran (BLOCK>SUSPECT>ERROR>PASS).
+detections: each Finding → "{vector}: {check} ({message})".
+layer_status: per layer — "ran" | "skipped" (L1 when L0 BLOCK short-circuits) | "not_run" | "error".
+evidence: per layer — the exact new diff events (dns/connect/file/proc) L2/L3 findings fired on (shown under -v).
 
-CLI: npm-pre-scan --full <dir>  (L1+L2+L3, Docker); name scans emit RiskReport from L0+L1.
-Tests: tests/report_aggregate.rs (offline) + report.rs units (incl. 0.82 example, L2-cap);
-       tests/full_pipeline.rs (2 Docker-gated: dummy_timebomb→SUSPECT+layer_3, dummy_benign_l3→SUSPECT/L1+L3 clean).
+CLI: npm-pre-scan --full <name|dir> (Docker); name scans (`<pkg>`) emit RiskReport from L0+L1.
+Tests: tests/report_aggregate.rs (offline, incl. 1.00 canonical example, L2-forces-BLOCK, layer_status);
+       tests/full_pipeline.rs (dummy_timebomb→SUSPECT+layer_3, dummy_benign_l3→PASS);
+       tests/full_registry.rs (registry-name smoke).
 ```
 
 Example output (`--full dummy_timebomb`, live):

@@ -4,23 +4,25 @@
 // lives in pure Rust functions (profile.rs, classify.rs) that are unit-testable
 // offline with recorded log fixtures.
 //
+// Baseline subtraction: to cancel npm/node's own toolchain reads (.npmrc,
+// /etc/passwd) at the source, the container traces each phase (install,
+// import) TWICE — an unmutated "baseline" run and the "real" run — and this
+// module diffs real-vs-baseline (reusing Layer 3's `diff_profiles_phase`)
+// before classifying. Only package-attributable behavior survives the diff.
+//
 // When Docker is absent, returns Verdict::Error with a descriptive note — no panic.
 
 pub mod classify;
 pub mod profile;
 
+use crate::docker::{check_ptrace_capability, docker_available, PtraceProbe};
+use crate::layer3::diff::{diff_profiles_phase, evidence_lines};
 use crate::models::{CheckResult, Finding, Verdict};
+use profile::Layer2Profile;
 use serde_json::{Map, Value};
+use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
-
-fn docker_available() -> bool {
-    Command::new("docker")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 fn error_result(package_name: &str, note: &str) -> CheckResult {
     CheckResult {
@@ -54,6 +56,18 @@ fn finding(severity: &str, message: &str) -> Finding {
 pub fn run_layer2_local(name: &str, dir: &Path) -> CheckResult {
     if !docker_available() {
         return error_result(name, "Docker required for Layer 2 — install Docker to enable dynamic analysis");
+    }
+
+    // Best-effort preflight: a missing SYS_PTRACE capability makes strace
+    // silently produce empty logs inside the container (a known past failure
+    // mode — see CLAUDE.md v10), which downstream would misread as "clean".
+    // Only a confirmed *denial* stops the run here — surfacing it up front is
+    // more actionable than letting the run complete and yield a false-PASS
+    // from empty logs. An inconclusive probe (`Unknown`) does NOT block; it
+    // can false-negative (no network, image not cached) in ways the real run
+    // may not, so we proceed and let the real run be the source of truth.
+    if let PtraceProbe::Denied(note) = check_ptrace_capability() {
+        return error_result(name, &format!("Docker preflight failed: {}", note));
     }
 
     let dockerfile_dir = match locate_docker_dir() {
@@ -120,28 +134,61 @@ pub fn run_layer2_local(name: &str, dir: &Path) -> CheckResult {
         }
     }
 
-    // Read raw logs from /out
-    let read_log = |filename: &str| -> String {
-        std::fs::read_to_string(out_dir.path().join(filename)).unwrap_or_default()
+    // Read raw logs from /out. A missing/unreadable log is NOT the same as a
+    // present-but-empty one: an empty log legitimately means "no events of
+    // that kind occurred" and is parsed as such, but a missing file means the
+    // container's capture step never ran or the host couldn't read it — in
+    // that case, silently substituting "" would misreport a failed capture as
+    // a clean scan. Surface it as Verdict::Error instead.
+    let read_log = |filename: &str| -> Result<String, String> {
+        std::fs::read_to_string(out_dir.path().join(filename))
+            .map_err(|e| format!("missing or unreadable log {}: {}", filename, e))
     };
 
-    let strace_install = read_log("strace_install.log");
-    let strace_import = read_log("strace_import.log");
-    let dns_log = read_log("dns.log");
+    // Load a run's (strace, dns) log pair into a `Layer2Profile` tagged with
+    // `phase`. Each of the 4 runs (install_base, install_real, import_base,
+    // import_real) gets its OWN dns log — the container restarts dnsmasq per
+    // run so DNS queries don't bleed across runs.
+    let load_run = |phase: &str, run: &str| -> Result<Layer2Profile, String> {
+        let strace_log = read_log(&format!("strace_{}.log", run))?;
+        let dns_log = read_log(&format!("dns_{}.log", run))?;
+        let mut prof = profile::parse_strace(phase, &strace_log);
+        prof.dns_queries.extend(profile::parse_dns(&dns_log));
+        Ok(prof)
+    };
 
-    // Parse logs into profiles
-    let mut install_profile = profile::parse_strace("install", &strace_install);
-    let mut import_profile = profile::parse_strace("import", &strace_import);
+    let install_base = match load_run("install", "install_base") {
+        Ok(p) => p,
+        Err(e) => return error_result(name, &e),
+    };
+    let install_real = match load_run("install", "install_real") {
+        Ok(p) => p,
+        Err(e) => return error_result(name, &e),
+    };
+    let import_base = match load_run("import", "import_base") {
+        Ok(p) => p,
+        Err(e) => return error_result(name, &e),
+    };
+    let import_real = match load_run("import", "import_real") {
+        Ok(p) => p,
+        Err(e) => return error_result(name, &e),
+    };
 
-    // DNS queries are merged into both profiles (dnsmasq captures all phases)
-    let dns_queries = profile::parse_dns(&dns_log);
-    install_profile.dns_queries.extend(dns_queries.iter().cloned());
-    import_profile.dns_queries.extend(dns_queries);
+    // Diff real-vs-baseline per phase (reusing Layer 3's diff engine): npm's
+    // own `.npmrc`/`/etc/passwd` reads and registry DNS occur identically in
+    // both baseline and real runs, so they cancel out here. Only the
+    // package's own postinstall/import behavior survives into the diff.
+    let install_diff = diff_profiles_phase(&install_base, &install_real, "install");
+    let import_diff = diff_profiles_phase(&import_base, &import_real, "import");
 
-    // Classify both profiles
+    // Classify each diff (not the raw profiles) — ordinary file opens that
+    // survive the diff (e.g. the package's own index.js, module-resolver
+    // stats) produce no findings since `classify` only flags sensitive paths,
+    // `.node` files, network activity, or unexpected processes.
     let mut findings: Vec<Finding> = Vec::new();
-    findings.extend(classify::classify(&install_profile));
-    findings.extend(classify::classify(&import_profile));
+    findings.extend(attach_evidence(classify::classify(&install_diff), &install_diff));
+    findings.extend(attach_evidence(classify::classify(&import_diff), &import_diff));
+    dedup_findings(&mut findings);
 
     // Derive verdict from findings
     let verdict = if findings
@@ -166,6 +213,45 @@ pub fn run_layer2_local(name: &str, dir: &Path) -> CheckResult {
         findings,
         note: None,
     }
+}
+
+/// Stamp every Finding in `findings` with an `"evidence"` array listing the
+/// exact new events (`dns:...`, `connect:ip:port`, `proc:...`, `file:...`)
+/// from the diff `Layer2Profile` that produced them (see
+/// `layer3::diff::evidence_lines`). Visibility only — not read back into
+/// classification or scoring. Always present in the JSON report; human
+/// output renders it under `--verbose`.
+fn attach_evidence(mut findings: Vec<Finding>, diff: &Layer2Profile) -> Vec<Finding> {
+    if findings.is_empty() {
+        return findings;
+    }
+    let evidence = evidence_lines(diff);
+    for f in &mut findings {
+        f.insert(
+            "evidence".to_string(),
+            Value::Array(evidence.iter().cloned().map(Value::String).collect()),
+        );
+    }
+    findings
+}
+
+/// Remove duplicate findings, keyed by `(check, vector, destination|path|message)`.
+/// The install and import diffs can independently surface the same underlying
+/// event (e.g. a worm-egress DNS query logged in both phases' dns files), so
+/// dedup before returning. Preserves first-seen order.
+fn dedup_findings(findings: &mut Vec<Finding>) {
+    let mut seen: HashSet<(String, String, String)> = HashSet::new();
+    findings.retain(|f| {
+        let check = f.get("check").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let vector = f.get("vector").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let key3 = f
+            .get("destination")
+            .or_else(|| f.get("path"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| f.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string());
+        seen.insert((check, vector, key3))
+    });
 }
 
 /// Locate the `docker/` directory relative to the project root.

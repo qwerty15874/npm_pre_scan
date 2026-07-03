@@ -1,3 +1,10 @@
+# Popular unscoped npm package names, used as the Levenshtein-distance
+# comparison set for typosquat detection (src/typosquat.rs) and as the
+# popular-token set for combosquat detection (src/combosquat.rs).
+# Lines starting with # are comments (skipped by load_top_packages()).
+#
+# Source: curated snapshot of top-downloaded npm packages (approx. 1137 names).
+# Last reviewed/updated: 2026-07-02.
 lodash
 express
 chalk

@@ -1,6 +1,15 @@
 # Known-IOC SHA-256 hashes for worm-signature detection.
-# One hex-encoded SHA-256 per line. Lines starting with # are comments.
-# Source: documented Shai-Hulud npm worm (Sept 2025).
+# One hex-encoded SHA-256 per line. Lines starting with # are comments (skipped
+# by the loader — see load_iocs() in src/layer1/worm_signature.rs).
+#
+# Provenance:
+#   Source: documented Shai-Hulud npm worm (Sept 2025 npm supply-chain compromise).
+#   File last reviewed/updated: 2026-07-02.
+#   Known limitation: the Shai-Hulud campaign shipped multiple bundle.js payload
+#   variants across compromised packages; only the one hash below is held with
+#   enough confidence to embed here. Do not add further hashes without a
+#   verifiable source — an invented/misremembered hash is worse than no hash
+#   (it gives false confidence in IOC coverage that isn't real).
 
 # Documented Shai-Hulud bundle.js hash (real-world IOC)
 46faab8ab153fae6e80e7cca38eab363075bb524edd79e42269217a083628f09

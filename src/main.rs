@@ -7,8 +7,8 @@ use npm_pre_scan::namespace::load_top_scoped_packages;
 use npm_pre_scan::registry::get_package_info;
 use npm_pre_scan::typosquat::load_top_packages;
 use npm_pre_scan::{
-    aggregate, run_full_local, run_layer0, run_layer1, run_layer1_local, run_layer2_local,
-    run_layer3_local, CheckResult, RiskReport,
+    aggregate, run_full_local, run_full_registry, run_layer0, run_layer1, run_layer1_local,
+    run_layer2_local, run_layer3_local, CheckResult, RiskReport,
 };
 
 #[derive(Parser, Debug)]
@@ -29,8 +29,10 @@ struct Cli {
     #[arg(long, value_name = "DIR")]
     layer3: Option<PathBuf>,
 
-    /// Full pipeline (L1+L2+L3) on a local dir with aggregate risk report; requires Docker
-    #[arg(long, value_name = "DIR")]
+    /// Full pipeline (L0+L1+L2+L3) with aggregate risk report; requires Docker.
+    /// Accepts a package NAME (fetched from the npm registry) OR a local DIR
+    /// (existing directory path — Layer 0 is skipped, no registry identity).
+    #[arg(long, value_name = "NAME_OR_DIR")]
     full: Option<PathBuf>,
 
     /// Output raw JSON
@@ -40,9 +42,29 @@ struct Cli {
     /// Disable color output
     #[arg(long)]
     no_color: bool,
+
+    /// Verbose progress output: per-layer/per-scenario status on stderr, and
+    /// per-finding evidence (exact new DNS/connect/file/process events) in
+    /// human-readable output. The evidence itself is always present in JSON
+    /// output regardless of this flag.
+    #[arg(long, short = 'v')]
+    verbose: bool,
 }
 
-fn print_layer_result(layer: &str, result: &CheckResult, use_color: bool) {
+/// Render a Finding's `"evidence"` array (see `layer3::diff::evidence_lines`)
+/// as indented lines, if present and non-empty. Verbose-only — callers gate
+/// this behind `cli.verbose`.
+fn print_evidence(f: &npm_pre_scan::Finding, indent: &str) {
+    if let Some(evidence) = f.get("evidence").and_then(|v| v.as_array()) {
+        for e in evidence {
+            if let Some(s) = e.as_str() {
+                println!("{}evidence: {}", indent, s);
+            }
+        }
+    }
+}
+
+fn print_layer_result(layer: &str, result: &CheckResult, use_color: bool, verbose: bool) {
     let verdict_str = result.verdict.to_string();
     let colored_verdict = if use_color {
         match result.verdict {
@@ -83,11 +105,24 @@ fn print_layer_result(layer: &str, result: &CheckResult, use_color: bool) {
                 sev.to_string()
             };
             println!("  [{}] ({}) {}", colored_sev, check, message);
+            if verbose {
+                print_evidence(f, "      ");
+            }
         }
     }
 }
 
-fn print_report(report: &RiskReport, use_color: bool) {
+/// Lowercase status label for human output, matching the JSON `layer_status` value.
+fn layer_status_label(status: npm_pre_scan::LayerStatus) -> &'static str {
+    match status {
+        npm_pre_scan::LayerStatus::Ran => "ran",
+        npm_pre_scan::LayerStatus::Error => "error",
+        npm_pre_scan::LayerStatus::NotRun => "not_run",
+        npm_pre_scan::LayerStatus::Skipped => "skipped",
+    }
+}
+
+fn print_report(report: &RiskReport, use_color: bool, verbose: bool) {
     let verdict_str = report.verdict.to_string();
     let colored_verdict = if use_color {
         match report.verdict {
@@ -104,6 +139,15 @@ fn print_report(report: &RiskReport, use_color: bool) {
     println!("Package    : {}", report.package);
     println!("Risk Score : {:.2}", report.risk_score);
     println!("Verdict    : {}", colored_verdict);
+    if verbose {
+        println!(
+            "Layer status: L0={} L1={} L2={} L3={}",
+            layer_status_label(report.layer_status[0]),
+            layer_status_label(report.layer_status[1]),
+            layer_status_label(report.layer_status[2]),
+            layer_status_label(report.layer_status[3]),
+        );
+    }
 
     let print_detections = |label: &str, items: &[String]| {
         if !items.is_empty() {
@@ -117,6 +161,21 @@ fn print_report(report: &RiskReport, use_color: bool) {
     print_detections("Layer 1", &report.detections.layer_1);
     print_detections("Layer 2", &report.detections.layer_2);
     print_detections("Layer 3", &report.detections.layer_3);
+
+    if verbose {
+        let print_evidence_list = |label: &str, items: &[String]| {
+            if !items.is_empty() {
+                println!("{} evidence:", label);
+                for item in items {
+                    println!("  - {}", item);
+                }
+            }
+        };
+        print_evidence_list("Layer 0", &report.evidence.layer_0);
+        print_evidence_list("Layer 1", &report.evidence.layer_1);
+        print_evidence_list("Layer 2", &report.evidence.layer_2);
+        print_evidence_list("Layer 3", &report.evidence.layer_3);
+    }
 }
 
 fn exit_code_for(verdict: &Verdict) -> i32 {
@@ -139,22 +198,19 @@ fn main() {
             .unwrap_or("local-package")
             .to_string();
         eprintln!("Scanning local dir as Layer 1: {} ({})", name, dir.display());
+        if cli.verbose {
+            eprintln!("[Layer 1] Running static analysis checks (install scripts, obfuscation, worm signature, version diff)...");
+        }
         let result = run_layer1_local(&name, &dir);
 
         if cli.json {
             println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
         } else {
-            print_layer_result("Layer 1", &result, !cli.no_color);
+            print_layer_result("Layer 1", &result, !cli.no_color, cli.verbose);
             println!();
         }
 
-        let code = match result.verdict {
-            Verdict::Pass => 0,
-            Verdict::Suspect => 1,
-            Verdict::Block => 2,
-            Verdict::Error => 3,
-        };
-        std::process::exit(code);
+        std::process::exit(exit_code_for(&result.verdict));
     }
 
     // --layer2 mode: Layer 2 dynamic analysis on a local directory (requires Docker)
@@ -165,22 +221,19 @@ fn main() {
             .unwrap_or("local-package")
             .to_string();
         eprintln!("Scanning local dir as Layer 2 (Docker): {} ({})", name, dir.display());
+        if cli.verbose {
+            eprintln!("[Layer 2] Building Docker image, running install+import baseline/real traces (4 container runs)...");
+        }
         let result = run_layer2_local(&name, &dir);
 
         if cli.json {
             println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
         } else {
-            print_layer_result("Layer 2", &result, !cli.no_color);
+            print_layer_result("Layer 2", &result, !cli.no_color, cli.verbose);
             println!();
         }
 
-        let code = match result.verdict {
-            Verdict::Pass => 0,
-            Verdict::Suspect => 1,
-            Verdict::Block => 2,
-            Verdict::Error => 3,
-        };
-        std::process::exit(code);
+        std::process::exit(exit_code_for(&result.verdict));
     }
 
     // --layer3 mode: Layer 3 condition-mutation analysis on a local directory (requires Docker)
@@ -191,38 +244,57 @@ fn main() {
             .unwrap_or("local-package")
             .to_string();
         eprintln!("Scanning local dir as Layer 3 (Docker): {} ({})", name, dir.display());
+        if cli.verbose {
+            eprintln!("[Layer 3] Building Docker image, running baseline + clock(D1) + env(D2) + fuzz(D3) scenarios...");
+        }
         let result = run_layer3_local(&name, &dir);
 
         if cli.json {
             println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
         } else {
-            print_layer_result("Layer 3", &result, !cli.no_color);
+            print_layer_result("Layer 3", &result, !cli.no_color, cli.verbose);
             println!();
         }
 
-        let code = match result.verdict {
-            Verdict::Pass => 0,
-            Verdict::Suspect => 1,
-            Verdict::Block => 2,
-            Verdict::Error => 3,
-        };
-        std::process::exit(code);
+        std::process::exit(exit_code_for(&result.verdict));
     }
 
-    // --full mode: full pipeline (L1+L2+L3) on a local directory with aggregate risk report (requires Docker)
-    if let Some(dir) = cli.full {
-        let name = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("local-package")
-            .to_string();
-        eprintln!("Scanning local dir as full pipeline (L1+L2+L3, Docker): {} ({})", name, dir.display());
-        let report = run_full_local(&name, &dir);
+    // --full mode: full pipeline with aggregate risk report (requires Docker).
+    // Accepts either an existing local directory (Layer 0 skipped — no
+    // registry identity) or a package name (fetched from the npm registry,
+    // all four layers run — the "unified single tool" path).
+    if let Some(value) = cli.full {
+        let report = if value.is_dir() {
+            let name = value
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("local-package")
+                .to_string();
+            eprintln!(
+                "Scanning local dir as full pipeline (L1+L2+L3, Docker): {} ({})",
+                name,
+                value.display()
+            );
+            if cli.verbose {
+                eprintln!("[Layer 1] static analysis -> [Layer 2] dynamic (install+import, Docker) -> [Layer 3] condition mutation (clock/env/fuzz, Docker)");
+            }
+            run_full_local(&name, &value)
+        } else {
+            let name = value.to_string_lossy().to_string();
+            eprintln!(
+                "Scanning registry package as full pipeline (L0+L1+L2+L3, Docker): {}",
+                name
+            );
+            if cli.verbose {
+                eprintln!("[Layer 0] registry metadata -> [Layer 1] static analysis -> [Layer 2] dynamic (Docker) -> [Layer 3] condition mutation (Docker)");
+            }
+            run_full_registry(&name)
+        };
 
         if cli.json {
             println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
         } else {
-            print_report(&report, !cli.no_color);
+            print_report(&report, !cli.no_color, cli.verbose);
             println!();
         }
 
@@ -230,25 +302,39 @@ fn main() {
     }
 
     if cli.packages.is_empty() {
-        eprintln!("Error: provide package name(s) or --local <dir> or --layer2 <dir> or --layer3 <dir> or --full <dir>");
+        eprintln!("Error: provide package name(s) or --local <dir> or --layer2 <dir> or --layer3 <dir> or --full <name|dir>");
         std::process::exit(1);
     }
 
     let top_packages = load_top_packages();
     let top_scoped = load_top_scoped_packages();
 
-    let mut all_pairs: Vec<(CheckResult, Option<CheckResult>)> = Vec::new();
+    // Third element: true iff Layer 1 was skipped specifically because Layer 0
+    // was BLOCK (early-exit optimization) — distinct from "not run because the
+    // package wasn't found on the registry", which is a genuine `NotRun`, not
+    // a `Skipped`.
+    let mut all_pairs: Vec<(CheckResult, Option<CheckResult>, bool)> = Vec::new();
 
     for pkg in &cli.packages {
-        eprintln!("Checking {} (Layer 0)...", pkg);
+        if cli.verbose {
+            eprintln!("[Layer 0] Checking {} (metadata/registry checks)...", pkg);
+        } else {
+            eprintln!("Checking {} (Layer 0)...", pkg);
+        }
         let l0 = run_layer0(pkg, &top_packages, &top_scoped);
         let l0_verdict = l0.verdict.clone();
 
+        let mut l1_skipped_by_l0_block = false;
         let l1 = if l0_verdict == Verdict::Block {
+            l1_skipped_by_l0_block = true;
             eprintln!("  → Layer 0 BLOCK — skipping Layer 1");
             None
         } else {
-            eprintln!("Checking {} (Layer 1)...", pkg);
+            if cli.verbose {
+                eprintln!("[Layer 1] Checking {} (static analysis)...", pkg);
+            } else {
+                eprintln!("Checking {} (Layer 1)...", pkg);
+            }
             match get_package_info(pkg) {
                 None => {
                     eprintln!("  → Package not found on registry — skipping Layer 1");
@@ -258,12 +344,18 @@ fn main() {
             }
         };
 
-        all_pairs.push((l0, l1));
+        all_pairs.push((l0, l1, l1_skipped_by_l0_block));
     }
 
     let reports: Vec<RiskReport> = all_pairs
         .iter()
-        .map(|(l0, l1)| aggregate(&l0.package, [Some(l0), l1.as_ref(), None, None]))
+        .map(|(l0, l1, l1_skipped)| {
+            let mut report = aggregate(&l0.package, [Some(l0), l1.as_ref(), None, None]);
+            if *l1_skipped {
+                report.mark_skipped(1);
+            }
+            report
+        })
         .collect();
 
     if cli.json {
@@ -274,12 +366,12 @@ fn main() {
         };
         println!("{}", output);
     } else {
-        for ((l0, l1), report) in all_pairs.iter().zip(reports.iter()) {
-            print_layer_result("Layer 0", l0, !cli.no_color);
+        for ((l0, l1, _), report) in all_pairs.iter().zip(reports.iter()) {
+            print_layer_result("Layer 0", l0, !cli.no_color, cli.verbose);
             if let Some(l1r) = l1 {
-                print_layer_result("Layer 1", l1r, !cli.no_color);
+                print_layer_result("Layer 1", l1r, !cli.no_color, cli.verbose);
             }
-            print_report(report, !cli.no_color);
+            print_report(report, !cli.no_color, cli.verbose);
         }
         println!();
     }

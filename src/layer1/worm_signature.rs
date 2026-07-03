@@ -26,6 +26,7 @@ fn finding(severity: &str, message: &str, file: &str, category: &str) -> Finding
     let mut m = Map::new();
     m.insert("check".into(), Value::String("worm_signature".into()));
     m.insert("severity".into(), Value::String(severity.to_string()));
+    m.insert("vector".into(), Value::String("E1".into()));
     m.insert("message".into(), Value::String(message.to_string()));
     m.insert("file".into(), Value::String(file.to_string()));
     m.insert("category".into(), Value::String(category.to_string()));
@@ -176,6 +177,7 @@ pub fn check_worm_signature(dir: &Path) -> Vec<Finding> {
         let mut worm_f = Map::new();
         worm_f.insert("check".into(), Value::String("worm_signature".into()));
         worm_f.insert("severity".into(), Value::String("BLOCK".into()));
+        worm_f.insert("vector".into(), Value::String("E1".into()));
         worm_f.insert(
             "message".into(),
             Value::String(format!(
@@ -216,11 +218,26 @@ mod tests {
             .collect()
     }
 
+    // 3e: the embedded worm_iocs.txt header comment (`# …`) must not leak into
+    // the loaded IOC hash set, and the two known real entries must survive.
+    #[test]
+    fn load_iocs_skips_header_comments() {
+        let iocs = load_iocs();
+        assert!(
+            !iocs.iter().any(|h| h.starts_with('#')),
+            "no loaded IOC hash should start with '#'"
+        );
+        assert!(iocs.contains("46faab8ab153fae6e80e7cca38eab363075bb524edd79e42269217a083628f09"));
+        assert!(iocs.contains("fbe31a8a58f864b736b7bed0e1b6f1bfc1fff447ad7397abb51bbd702e1b08c8"));
+        assert_eq!(iocs.len(), 2, "expected exactly the 2 known IOC hashes, got {}", iocs.len());
+    }
+
     #[test]
     fn self_propagation_npm_publish() {
         let d = dir_with(&[("bundle.js", "exec('npm publish --access public');")]);
         let f = check_worm_signature(d.path());
         assert!(cats(&f).contains(&"self_propagation"), "got: {:?}", f);
+        assert!(f.iter().all(|f| f.get("vector").and_then(|v| v.as_str()) == Some("E1")));
     }
 
     #[test]
@@ -245,6 +262,11 @@ mod tests {
         )]);
         let f = check_worm_signature(d.path());
         assert!(cats(&f).contains(&"worm"), "expected worm aggregate; got: {:?}", f);
+        let worm_finding = f.iter().find(|f| f.get("category").and_then(|v| v.as_str()) == Some("worm"));
+        assert_eq!(
+            worm_finding.and_then(|f| f.get("vector")).and_then(|v| v.as_str()),
+            Some("E1")
+        );
     }
 
     #[test]

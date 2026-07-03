@@ -43,6 +43,11 @@ pub fn check_age_and_downloads(name: &str, info: &Value) -> Option<Map<String, V
         },
     );
 
+    // No clean Ladisa taxonomy vector applies to age/download-spike — it's a
+    // heuristic metadata signal (not a distinct attack vector), so it is
+    // tagged "META" rather than an A/B/C/D/E code.
+    base.insert("vector".into(), Value::String("META".into()));
+
     if let (Some(w), Some(m)) = (weekly, monthly) {
         if m > 0 {
             let expected_weekly = m as f64 / 4.0;

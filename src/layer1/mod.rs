@@ -1,5 +1,5 @@
 mod checks;
-mod tarball;
+pub mod tarball;
 mod version_diff;
 mod worm_signature;
 
@@ -45,10 +45,38 @@ fn collect_dir_findings(pkg_json: &Value, dir: &Path) -> Vec<Finding> {
     findings
 }
 
+/// Run Layer 1 static analysis on an already-extracted package directory.
+///
+/// Shared by `run_layer1` (registry path: downloads first, then calls this)
+/// and `report::run_full_registry` (which downloads once and reuses the same
+/// extracted dir for Layer 1/2/3, avoiding a second download).
+///
+/// `pkg_json` is read from the registry `info` when available (the exact
+/// published `package.json` for the latest version); otherwise falls back to
+/// `dir/package.json` on disk. When `info` is `Some`, `version_diff::check_version_diff`
+/// runs too (registry version history is available); when `None`, it is skipped
+/// (mirrors `run_layer1_local`'s existing no-history behavior).
+pub fn run_layer1_extracted(name: &str, dir: &Path, info: Option<&Value>) -> CheckResult {
+    let pkg_json = match info.and_then(tarball::get_latest_version_pkg_json) {
+        Some(v) => v,
+        None => {
+            let pkg_json_path = dir.join("package.json");
+            std::fs::read_to_string(&pkg_json_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or(Value::Null)
+        }
+    };
+
+    let mut findings = collect_dir_findings(&pkg_json, dir);
+    if let Some(info) = info {
+        findings.extend(version_diff::check_version_diff(info));
+    }
+    build_result(name, findings)
+}
+
 /// Run Layer 1 static analysis on an npm package from the registry.
 pub fn run_layer1(package_name: &str, info: &Value) -> CheckResult {
-    let pkg_json = tarball::get_latest_version_pkg_json(info).unwrap_or(Value::Null);
-
     let tarball_url = match tarball::get_tarball_url(info) {
         Some(url) => url,
         None => {
@@ -75,9 +103,7 @@ pub fn run_layer1(package_name: &str, info: &Value) -> CheckResult {
         }
     };
 
-    let mut findings = collect_dir_findings(&pkg_json, tmp.path());
-    findings.extend(version_diff::check_version_diff(info));
-    build_result(package_name, findings)
+    run_layer1_extracted(package_name, tmp.path(), Some(info))
 }
 
 /// Run the B3 version-diff check against two local directories (prev and latest).
