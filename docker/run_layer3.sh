@@ -24,7 +24,10 @@ OUT_DIR="${OUT_DIR:-/out}"
 WORK_DIR=/work
 
 # strace syscall set — same as Layer 2 (musl/alpine emits plain `open`, not just `openat`).
-STRACE_SYSCALLS="execve,open,openat,openat2,connect"
+# unlink/unlinkat/rename*/chmod/fchmodat add write/delete visibility (wipers,
+# persistence-file drops, node_modules pollution) without tracing bare `write`
+# (which would blow up log volume).
+STRACE_SYSCALLS="execve,open,openat,openat2,connect,unlink,unlinkat,rename,renameat,renameat2,chmod,fchmodat"
 
 mkdir -p "$OUT_DIR"
 
@@ -103,11 +106,13 @@ stop_dns
 echo "Layer 3: clock scenario complete" >&2
 
 # ── Scenario: env — spoof a developer machine, strip CI signals ─────────────────
+# NODE_ENV=production and TERM=xterm-256color widen the developer-machine spoof
+# to also catch payloads gated on NODE_ENV or TTY presence, not just CI vars.
 start_dns env
 strace -f \
     -e trace="$STRACE_SYSCALLS" \
     -o "$OUT_DIR/strace_env.log" \
-    env -u CI -u GITHUB_ACTIONS -u CONTINUOUS_INTEGRATION HOME=/home/developer USER=dev \
+    env -u CI -u GITHUB_ACTIONS -u CONTINUOUS_INTEGRATION HOME=/home/developer USER=dev NODE_ENV=production TERM=xterm-256color \
     node -e "try { require('$WORK_DIR'); } catch(e) { process.stderr.write('require error: ' + e.message + '\n'); }" 2>&1 || true
 stop_dns
 echo "Layer 3: env scenario complete" >&2

@@ -75,3 +75,48 @@ fn e1_worm_egress_live_run() {
         result.findings
     );
 }
+
+/// Live Layer 2 run on dummy_wiper (B4 mass deletion) — requires Docker.
+#[test]
+#[ignore]
+fn b4_wiper_live_run() {
+    let dir = Path::new("dummy_packages/dummy_wiper");
+    let result = run_layer2_local("dummy_wiper", dir);
+    assert_eq!(
+        result.verdict,
+        Verdict::Block,
+        "dummy_wiper must produce BLOCK; got {:?} with findings: {:?}",
+        result.verdict,
+        result.findings
+    );
+}
+
+/// Live Layer 2 run on dummy_persistence (B4 sensitive file write) — requires Docker.
+#[test]
+#[ignore]
+fn b4_persistence_live_run() {
+    let dir = Path::new("dummy_packages/dummy_persistence");
+    let result = run_layer2_local("dummy_persistence", dir);
+    assert_eq!(
+        result.verdict,
+        Verdict::Block,
+        "dummy_persistence must produce BLOCK; got {:?} with findings: {:?}",
+        result.verdict,
+        result.findings
+    );
+}
+
+/// Live Layer 2 run on dummy_ip_egress (C1 IP-literal egress) — requires Docker.
+#[test]
+#[ignore]
+fn c1_ip_egress_live_run() {
+    let dir = Path::new("dummy_packages/dummy_ip_egress");
+    let result = run_layer2_local("dummy_ip_egress", dir);
+    assert_eq!(
+        result.verdict,
+        Verdict::Suspect,
+        "dummy_ip_egress must produce SUSPECT; got {:?} with findings: {:?}",
+        result.verdict,
+        result.findings
+    );
+}

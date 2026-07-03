@@ -41,6 +41,8 @@ fn collect_dir_findings(pkg_json: &Value, dir: &Path) -> Vec<Finding> {
     findings.extend(checks::check_suspicious_strings(dir));
     findings.extend(checks::check_network_imports(dir));
     findings.extend(checks::check_dynamic_require(dir));
+    findings.extend(checks::check_computed_load(dir));
+    findings.extend(checks::check_capability_notes(dir));
     findings.extend(worm_signature::check_worm_signature(dir));
     findings
 }

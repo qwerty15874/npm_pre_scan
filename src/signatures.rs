@@ -71,10 +71,7 @@ pub fn check_signatures(package_name: &str, info: &Value) -> Option<Finding> {
     let version = latest_version(info)?;
     let dist = info.get("versions")?.get(&version)?.get("dist")?;
 
-    let integrity = match dist.get("integrity").and_then(|v| v.as_str()) {
-        Some(i) => i,
-        None => return None,
-    };
+    let integrity = dist.get("integrity").and_then(|v| v.as_str())?;
 
     let signatures = match dist.get("signatures").and_then(|v| v.as_array()) {
         Some(s) if !s.is_empty() => s,

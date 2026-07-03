@@ -24,7 +24,7 @@ pub fn check_combosquat(name: &str, top_packages: &[String]) -> Option<Map<Strin
     let bare = bare_name(name);
 
     // Need at least 2 tokens — single-token names cannot be combosquats.
-    let tokens: Vec<&str> = bare.split(|c| c == '-' || c == '_' || c == '.').collect();
+    let tokens: Vec<&str> = bare.split(['-', '_', '.']).collect();
     if tokens.len() < 2 {
         return None;
     }

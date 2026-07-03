@@ -10,10 +10,8 @@ fn extract_maintainer_names(maintainers: &Value) -> HashSet<String> {
         for m in arr {
             let name = if let Some(obj) = m.as_object() {
                 obj.get("name").and_then(|v| v.as_str()).unwrap_or("")
-            } else if let Some(s) = m.as_str() {
-                s
             } else {
-                ""
+                m.as_str().unwrap_or_default()
             };
             if !name.is_empty() {
                 result.insert(name.to_string());

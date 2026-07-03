@@ -20,6 +20,12 @@ pub struct Layer2Profile {
     pub dns_queries: Vec<String>,
     /// Native addon paths opened or dlopen'd (*.node files).
     pub native_modules: Vec<String>,
+    /// Paths written to: opened with a write flag, chmod'd, or a rename destination.
+    #[serde(default)]
+    pub file_writes: Vec<String>,
+    /// Paths deleted: unlink/unlinkat targets and rename SOURCE paths.
+    #[serde(default)]
+    pub file_deletes: Vec<String>,
 }
 
 /// Parse a strace log (output of `strace -f -e trace=execve,openat,connect`) into a
@@ -44,11 +50,27 @@ pub fn parse_strace(phase: &str, log: &str) -> Layer2Profile {
             if path.ends_with(".node") {
                 profile.native_modules.push(path.clone());
             }
+            if open_is_write(line) {
+                profile.file_writes.push(path.clone());
+            }
             profile.file_opens.push(path);
         }
         // connect(fd, {sa_family=AF_INET, sin_addr="1.2.3.4", sin_port=htons(443)}, ...)
         if let Some((ip, port)) = parse_connect(line) {
             profile.connects.push((ip, port));
+        }
+        // unlink("path") / unlinkat(AT_FDCWD, "path", flags) — file deleted.
+        if let Some(path) = parse_unlink(line) {
+            profile.file_deletes.push(path);
+        }
+        // rename("old","new") / renameat(...) / renameat2(...) — source deleted, dest written.
+        if let Some((src, dst)) = parse_rename(line) {
+            profile.file_deletes.push(src);
+            profile.file_writes.push(dst);
+        }
+        // chmod("path", mode) / fchmodat(AT_FDCWD, "path", mode, flags) — file modified.
+        if let Some(path) = parse_chmod(line) {
+            profile.file_writes.push(path);
         }
     }
 
@@ -110,6 +132,61 @@ fn parse_open(line: &str) -> Option<String> {
     extract_quoted(rest)
 }
 
+/// Return true if an open/openat strace line's flags indicate a write-capable
+/// open (as opposed to a plain read). Scoped to a single line so an unrelated
+/// line mentioning one of these tokens elsewhere can't cross-contaminate.
+fn open_is_write(line: &str) -> bool {
+    line.contains("O_WRONLY") || line.contains("O_RDWR") || line.contains("O_CREAT") || line.contains("O_TRUNC")
+}
+
+/// Extract the deleted path from an unlink/unlinkat strace line.
+/// Format: `unlink("/path")` or `unlinkat(AT_FDCWD, "/path", 0)`.
+fn parse_unlink(line: &str) -> Option<String> {
+    let rest = skip_pid_prefix(line);
+    let rest = rest.trim_start();
+    if let Some(rest) = rest.strip_prefix("unlinkat(") {
+        // Skip the first argument (dirfd, e.g. "AT_FDCWD, ")
+        let after_comma = rest.find(',')? + 1;
+        let rest = rest[after_comma..].trim_start();
+        return extract_quoted(rest);
+    }
+    let rest = rest.strip_prefix("unlink(")?;
+    extract_quoted(rest)
+}
+
+/// Extract (source, dest) paths from a rename/renameat/renameat2 strace line.
+/// Format: `rename("/a","/b")`, `renameat(AT_FDCWD,"/a",AT_FDCWD,"/b")`, or
+/// `renameat2(AT_FDCWD,"/a",AT_FDCWD,"/b",0)`. Takes the FIRST and LAST quoted
+/// strings on the line (the two paths), skipping any dirfd arguments in between.
+fn parse_rename(line: &str) -> Option<(String, String)> {
+    let rest = skip_pid_prefix(line);
+    let rest = rest.trim_start();
+    let rest = rest
+        .strip_prefix("renameat2(")
+        .or_else(|| rest.strip_prefix("renameat("))
+        .or_else(|| rest.strip_prefix("rename("))?;
+
+    let paths = extract_all_quoted(rest);
+    if paths.len() < 2 {
+        return None;
+    }
+    Some((paths[0].clone(), paths[paths.len() - 1].clone()))
+}
+
+/// Extract the modified path from a chmod/fchmodat strace line.
+/// Format: `chmod("/path", 0755)` or `fchmodat(AT_FDCWD, "/path", 0755, 0)`.
+fn parse_chmod(line: &str) -> Option<String> {
+    let rest = skip_pid_prefix(line);
+    let rest = rest.trim_start();
+    if let Some(rest) = rest.strip_prefix("fchmodat(") {
+        let after_comma = rest.find(',')? + 1;
+        let rest = rest[after_comma..].trim_start();
+        return extract_quoted(rest);
+    }
+    let rest = rest.strip_prefix("chmod(")?;
+    extract_quoted(rest)
+}
+
 /// Extract (ip, port) from a connect() strace line.
 /// Format: `connect(fd, {sa_family=AF_INET, sin_addr="1.2.3.4", sin_port=htons(443)}, 16)`
 fn parse_connect(line: &str) -> Option<(String, u16)> {
@@ -117,10 +194,14 @@ fn parse_connect(line: &str) -> Option<(String, u16)> {
     let rest = rest.trim_start();
     let rest = rest.strip_prefix("connect(")?;
 
-    // sin_addr="..."
+    // strace renders the address as either `sin_addr="1.2.3.4"` (older) or
+    // `sin_addr=inet_addr("1.2.3.4")` (modern, what current strace on
+    // node:lts-alpine actually emits). In BOTH forms the IP is the first
+    // double-quoted string after `sin_addr=`, so skip to that first quote.
     let addr_start = rest.find("sin_addr=")?;
     let after_addr = &rest[addr_start + "sin_addr=".len()..];
-    let ip = extract_quoted(after_addr)?;
+    let quote = after_addr.find('"')?;
+    let ip = extract_quoted(&after_addr[quote..])?;
 
     // sin_port=htons(NNN)
     let port_start = rest.find("sin_port=htons(")?;
@@ -169,6 +250,39 @@ fn skip_pid_prefix(line: &str) -> &str {
         }
     }
     line
+}
+
+/// Extract the content of every double-quoted string found in `s`, in order.
+/// Used by `parse_rename` to pull both the source and destination path out of
+/// a line that may have dirfd arguments (e.g. `AT_FDCWD`) interspersed.
+fn extract_all_quoted(s: &str) -> Vec<String> {
+    let mut results = Vec::new();
+    let mut cursor = s;
+    while let Some(quote_start) = cursor.find('"') {
+        let after_quote = &cursor[quote_start..];
+        match extract_quoted(after_quote) {
+            Some(path) => {
+                // Advance past the closing quote of this match.
+                let body = &after_quote[1..];
+                let mut end = body.len();
+                let mut chars = body.char_indices();
+                while let Some((i, c)) = chars.next() {
+                    if c == '\\' {
+                        chars.next();
+                        continue;
+                    }
+                    if c == '"' {
+                        end = i;
+                        break;
+                    }
+                }
+                results.push(path);
+                cursor = &body[(end + 1).min(body.len())..];
+            }
+            None => break,
+        }
+    }
+    results
 }
 
 /// Extract the content of the first double-quoted string at the start of `s`.
@@ -248,6 +362,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_connect_inet_addr_form() {
+        // Modern strace (node:lts-alpine) wraps the address in inet_addr(...) and
+        // may emit sin_port BEFORE sin_addr. Both must parse.
+        let line = r#"[pid    11] connect(18, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("8.8.8.8")}, 16) = -1 ENETUNREACH (Network unreachable)"#;
+        assert_eq!(parse_connect(line), Some(("8.8.8.8".to_string(), 443)));
+    }
+
+    #[test]
     fn parse_dns_line_basic() {
         let line = "dnsmasq[42]: query[A] api.github.com from 127.0.0.1";
         assert_eq!(parse_dns_line(line), Some("api.github.com".to_string()));
@@ -288,5 +410,105 @@ mod tests {
         assert_eq!(q.len(), 2);
         assert!(q.contains(&"registry.npmjs.org".to_string()));
         assert!(q.contains(&"aabbccdd.c2.example.com".to_string()));
+    }
+
+    // ── file_writes / file_deletes ─────────────────────────────────────────
+
+    #[test]
+    fn write_open_lands_in_file_writes_and_file_opens() {
+        let log = r#"openat(AT_FDCWD, "/root/.bashrc", O_WRONLY|O_CREAT, 0644) = 4"#;
+        let p = parse_strace("import", log);
+        assert!(p.file_writes.contains(&"/root/.bashrc".to_string()));
+        assert!(p.file_opens.contains(&"/root/.bashrc".to_string()));
+    }
+
+    #[test]
+    fn read_open_does_not_land_in_file_writes() {
+        // Negative control: a read-only open must NOT appear in file_writes.
+        let log = r#"openat(AT_FDCWD, "/root/.bashrc", O_RDONLY) = 4"#;
+        let p = parse_strace("import", log);
+        assert!(p.file_opens.contains(&"/root/.bashrc".to_string()));
+        assert!(!p.file_writes.contains(&"/root/.bashrc".to_string()));
+    }
+
+    #[test]
+    fn parse_unlink_basic() {
+        let line = r#"unlink("/tmp/victim1") = 0"#;
+        assert_eq!(parse_unlink(line), Some("/tmp/victim1".to_string()));
+    }
+
+    #[test]
+    fn parse_unlinkat_basic() {
+        let line = r#"unlinkat(AT_FDCWD, "/tmp/victim2", 0) = 0"#;
+        assert_eq!(parse_unlink(line), Some("/tmp/victim2".to_string()));
+    }
+
+    #[test]
+    fn parse_rename_basic() {
+        let line = r#"rename("/tmp/a", "/tmp/b") = 0"#;
+        assert_eq!(
+            parse_rename(line),
+            Some(("/tmp/a".to_string(), "/tmp/b".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_renameat_skips_dirfds() {
+        let line = r#"renameat(AT_FDCWD, "/tmp/a", AT_FDCWD, "/tmp/b") = 0"#;
+        assert_eq!(
+            parse_rename(line),
+            Some(("/tmp/a".to_string(), "/tmp/b".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_renameat2_skips_dirfds_and_flags() {
+        let line = r#"renameat2(AT_FDCWD, "/tmp/a", AT_FDCWD, "/tmp/b", 0) = 0"#;
+        assert_eq!(
+            parse_rename(line),
+            Some(("/tmp/a".to_string(), "/tmp/b".to_string()))
+        );
+    }
+
+    #[test]
+    fn rename_source_and_dest_land_in_deletes_and_writes() {
+        let log = "rename(\"/tmp/a\", \"/tmp/b\") = 0\n";
+        let p = parse_strace("import", log);
+        assert!(p.file_deletes.contains(&"/tmp/a".to_string()));
+        assert!(p.file_writes.contains(&"/tmp/b".to_string()));
+    }
+
+    #[test]
+    fn parse_chmod_basic() {
+        let line = r#"chmod("/tmp/a", 0755) = 0"#;
+        assert_eq!(parse_chmod(line), Some("/tmp/a".to_string()));
+    }
+
+    #[test]
+    fn parse_fchmodat_skips_dirfd() {
+        let line = r#"fchmodat(AT_FDCWD, "/tmp/a", 0755, 0) = 0"#;
+        assert_eq!(parse_chmod(line), Some("/tmp/a".to_string()));
+    }
+
+    #[test]
+    fn chmod_lands_in_file_writes() {
+        let log = "chmod(\"/tmp/a\", 0755) = 0\n";
+        let p = parse_strace("import", log);
+        assert!(p.file_writes.contains(&"/tmp/a".to_string()));
+    }
+
+    #[test]
+    fn parse_strace_collects_write_and_delete_fields_with_pid_prefixes() {
+        let log = concat!(
+            "4001  openat(AT_FDCWD, \"/root/.bashrc\", O_WRONLY|O_APPEND|O_CREAT, 0644) = 4\n",
+            "4001  unlinkat(AT_FDCWD, \"/tmp/victim\", 0) = 0\n",
+            "4001  renameat(AT_FDCWD, \"/tmp/old\", AT_FDCWD, \"/tmp/new\") = 0\n",
+            "4001  fchmodat(AT_FDCWD, \"/tmp/new\", 0755, 0) = 0\n",
+        );
+        let p = parse_strace("import", log);
+        assert!(p.file_writes.contains(&"/root/.bashrc".to_string()));
+        assert!(p.file_deletes.contains(&"/tmp/victim".to_string()));
+        assert!(p.file_deletes.contains(&"/tmp/old".to_string()));
+        assert!(p.file_writes.contains(&"/tmp/new".to_string()));
     }
 }

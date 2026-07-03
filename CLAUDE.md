@@ -78,15 +78,65 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 | D2 | Environment-triggered (CI evasion) | condition | Layer 3 | dummy_env_triggered | ✅ DONE (L3 live-verified: env scenario triggers DNS) |
 | D3 | Trigger-on-use (API-call-gated) | run-time | Layer 3 | dummy_api_triggered | ✅ DONE (L3 live-verified: fuzz scenario triggers DNS) |
 | E1 | Self-propagating worm (Shai-Hulud) | install/import/run | Layer 1 (worm signature) + Layer 2/3 | dummy_shai_hulud | ✅ DONE (L1 static + L2 live worm-egress BLOCK); L3 TODO |
+| B4 | Destructive / persistence (wiper, dotfile/cron/git-hook/authorized_keys tampering, node_modules pollution) | install/import/run | Layer 2/3 (file-write + mass-deletion, baseline-diffed) | dummy_wiper, dummy_persistence | ✅ DONE v14 (L2/L3 live-verified: wiper→BLOCK, persistence→BLOCK) |
 
 > A4 and B3 promoted from candidates to DONE (implemented and verified via integration tests).
 > E1 Layer 1 static detection done (worm_signature.rs); Layer 2 dynamic worm-egress live-verified (BLOCK); Layer 3 deferred.
 > D1/D2/D3 promoted to DONE (Layer 3 condition mutation, live Docker verified 2026-07-01).
 > **All in-scope detection vectors (A1–E1) are now DONE and verified.** Remaining work is risk-score aggregation, not coverage.
+> v14: added **B4** (destructive/persistence + wiper, Layer 2/3) plus IP-literal egress, Layer 1 static broadening (atob/Function-ctor/computed-import/expanded shell-exfil/worker_threads/.wasm), and runtime-extensible IOC/egress lists — deepening detection beyond the original A1–E1 set.
 
 ---
 
 ## Change Log
+
+### v14: Detection-coverage expansion — file-tampering class, IP-literal egress, static broadening, runtime-extensible lists (2026-07-03)
+Scope: user asked to "review the project, make better workflows, expand detect and defense coverage."
+After a 3-agent audit (detection map / pipeline map / tests-data map) + 3-agent design pass, the user
+chose **detection-first** for this build; workflow + defense (policy/allowlist, npm-safe-install wrapper,
+project CI, GitHub scan action) + evaluation are fully designed and sequenced as follow-up passes (see
+`.claude/plans/`). Planning/review Fable, coding Sonnet (per-phase, reviewed + cargo-verified between),
+docs Fable. Offline **217 passed** (was 164); live Docker **15/15** (8 layer2_dynamic + 4 layer3_dynamic
++ 2 full_pipeline + 1 full_registry).
+- **New vector B4 — destructive/persistence + wiper (Layer 2/3).** strace previously traced only
+  reads/execve/connect, so file WRITES/DELETES/RENAMES/CHMOD were invisible. Broadened `STRACE_SYSCALLS`
+  in run_layer2.sh/run_layer3.sh with `unlink,unlinkat,rename,renameat,renameat2,chmod,fchmodat` (bare
+  `write` deliberately omitted — log-volume). `Layer2Profile` gained `file_writes`/`file_deletes`
+  (`#[serde(default)]`); `parse_strace` gained `open_is_write` (O_WRONLY/O_RDWR/O_CREAT/O_TRUNC flag
+  detection) + `parse_unlink`/`parse_rename`/`parse_chmod`. New classify rules `sensitive_file_write`
+  (.npmrc/.bashrc/authorized_keys/cron/git-hooks/node_modules/.bin → BLOCK) and `mass_deletion` (≥20
+  package-attributable deletes → BLOCK, wiper). Auto-live in Layer 3 via `classify_scenario`. All new
+  rules are baseline-diffed, and writes/deletes to ephemeral/system scratch (`/tmp`, `/dev` incl.
+  `/dev/shm`, `/proc`, `/sys`, `/run`, `/var/tmp`) are excluded via `is_ephemeral_or_system_path` — this
+  is what keeps the Layer 3 **clock** scenario honest (libfaketime, LD_PRELOAD'd only in the mutated run,
+  writes/unlinks its own `/dev/shm/faketime_*` shm+sem files; without the filter they survived the
+  baseline diff and false-positived every benign package). `diff.rs` `normalize_path` also gained
+  node_modules atomic-staging + `.tmp`/`~` folds; `evidence_lines` renders `write:`/`delete:`.
+- **IP-literal egress (Layer 2/3, C1).** `connect()` to a public IPv4 (std `Ipv4Addr`, excludes
+  private/loopback/link-local/CGNAT/etc.) → SUSPECT `ip_literal_egress` — closes the DNS-sinkhole bypass
+  where malware hardcodes a C2 IP. **Fixed a latent `parse_connect` bug found via this path**: modern
+  strace on node:lts-alpine emits `sin_addr=inet_addr("1.2.3.4")`, not `sin_addr="1.2.3.4"` — the parser
+  only handled the latter, so connect-based detection (incl. the IMDS worm-egress rule) had NEVER worked
+  live, only in hand-written fixtures. Parser now reads the first quoted string after `sin_addr=`
+  (handles both forms); fixtures corrected to real strace output.
+- **Layer 1 static broadening (B2).** `atob(` + `Function("…")` constructor (BLOCK when combined with
+  eval/atob-execution), computed `import(x+y)` + systematic split-string obfuscation (`'ht'+'tp'`, ≥3
+  occurrences), expanded shell-exfil binaries (python/perl/ruby, `/dev/tcp/`, `base64 -d`), and INFO
+  capability notes (`worker_threads`, `.wasm`). New `check_computed_load`/`check_capability_notes` wired
+  into `collect_dir_findings`.
+- **Runtime-extensible detection lists.** New `src/runtime_lists.rs` (`merge_lines` pure + `merge_runtime_lines`
+  env-file loader, additive-over-embedded, never-panics). Operators can extend worm IOCs
+  (`NPM_PRE_SCAN_IOCS`) and egress hosts (`NPM_PRE_SCAN_EGRESS_HOSTS`) without recompiling. Network-module
+  list left compile-time (its regex-fragment form doesn't merge cleanly) — noted future work.
+- **Layer 3 D2 mutation** widened: env scenario now also sets `NODE_ENV=production`/`TERM` (catches more
+  env gates). Second clock date deferred (needs mod.rs scenario wiring, low marginal value).
+- **Phase 0 hygiene**: fixed the 3 known clippy nits (clippy `-D warnings` clean). The three
+  speculative refactor-extractions from the plan (run_name_scan/ensure_layer_image/colorize_verdict) were
+  deferred to the workflow/defense passes that consume them (no current consumer → avoid speculative code).
+- **Known follow-ups (designed, not built this pass)**: workflow (manifest/lockfile scan, batch, parallel
+  L2/L3, SARIF), defense (policy/allowlist, npm-safe-install.sh, .github CI, composite scan action),
+  evaluation harness (OSSF malicious-names recall + benign-top-N FPR). Full designs in
+  `.claude/plans/review-all-of-this-logical-parrot.md`.
 
 ### v1: Initial design
 - Python pipeline + Docker, Layer 0~3 early-exit structure.

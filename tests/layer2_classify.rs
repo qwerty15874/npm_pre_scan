@@ -228,6 +228,86 @@ fn e1_worm_imds_connect_blocks() {
     );
 }
 
+// ── B4: file-write / wiper / persistence detection ───────────────────────────
+
+/// B4: mass deletion (wiper) fixture — 25 unlinks → BLOCK mass_deletion
+#[test]
+fn b4_wiper_mass_deletion_blocks() {
+    let log = fixture("wiper_strace.log");
+    let profile = parse_strace("import", &log);
+    let findings = classify(&profile);
+
+    assert!(
+        !findings.is_empty(),
+        "Expected findings for wiper fixture; got none"
+    );
+    assert!(
+        checks(&findings).contains(&"mass_deletion"),
+        "Expected mass_deletion finding; checks: {:?}",
+        checks(&findings)
+    );
+    assert!(
+        vectors(&findings).contains(&"B4"),
+        "Expected B4 vector; vectors: {:?}",
+        vectors(&findings)
+    );
+    assert_eq!(verdict_from(&findings), Verdict::Block);
+}
+
+/// B4: persistence fixture (.bashrc write) → BLOCK sensitive_file_write
+#[test]
+fn b4_persistence_bashrc_write_blocks() {
+    let log = fixture("persistence_strace.log");
+    let profile = parse_strace("import", &log);
+    let findings = classify(&profile);
+
+    assert!(
+        !findings.is_empty(),
+        "Expected findings for persistence fixture; got none"
+    );
+    assert!(
+        checks(&findings).contains(&"sensitive_file_write"),
+        "Expected sensitive_file_write finding; checks: {:?}",
+        checks(&findings)
+    );
+    assert!(
+        vectors(&findings).contains(&"B4"),
+        "Expected B4 vector; vectors: {:?}",
+        vectors(&findings)
+    );
+    assert_eq!(verdict_from(&findings), Verdict::Block);
+}
+
+// ── C1 (TASK 1b): IP-literal egress ──────────────────────────────────────────
+
+/// C1: connect to hardcoded public IP (8.8.8.8) → SUSPECT ip_literal_egress
+#[test]
+fn c1_ip_egress_public_ip_suspect() {
+    let log = fixture("ip_egress_strace.log");
+    let profile = parse_strace("import", &log);
+    let findings = classify(&profile);
+
+    assert!(
+        !findings.is_empty(),
+        "Expected findings for ip_egress fixture; got none"
+    );
+    assert!(
+        checks(&findings).contains(&"ip_literal_egress"),
+        "Expected ip_literal_egress finding; checks: {:?}",
+        checks(&findings)
+    );
+    assert!(
+        vectors(&findings).contains(&"C1"),
+        "Expected C1 vector; vectors: {:?}",
+        vectors(&findings)
+    );
+    assert!(
+        sev(&findings).contains(&"SUSPECT"),
+        "Expected SUSPECT; severities: {:?}",
+        sev(&findings)
+    );
+}
+
 // ── Benign control ────────────────────────────────────────────────────────────
 
 /// Benign package: no suspicious activity → PASS (no BLOCK or SUSPECT findings)

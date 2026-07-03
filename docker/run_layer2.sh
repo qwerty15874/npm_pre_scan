@@ -41,7 +41,10 @@ WORK_DIR=/work
 
 # strace syscall set. NOTE: alpine's musl (and older glibc) emit the plain `open`
 # syscall, not `openat`, so both must be traced or file-based detection is blind.
-STRACE_SYSCALLS="execve,open,openat,openat2,connect"
+# unlink/unlinkat/rename*/chmod/fchmodat add write/delete visibility (wipers,
+# persistence-file drops, node_modules pollution) without tracing bare `write`
+# (which would blow up log volume).
+STRACE_SYSCALLS="execve,open,openat,openat2,connect,unlink,unlinkat,rename,renameat,renameat2,chmod,fchmodat"
 
 mkdir -p "$OUT_DIR"
 

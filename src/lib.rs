@@ -10,6 +10,7 @@ pub mod models;
 pub mod namespace;
 pub mod registry;
 pub mod report;
+pub mod runtime_lists;
 pub mod signatures;
 pub mod typosquat;
 
