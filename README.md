@@ -46,6 +46,9 @@ All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-ve
  D2  Environment-triggered            3        DONE — live SUSPECT (env scenario triggers egress)
  D3  Trigger-on-use (API-gated)       3        DONE — live SUSPECT (fuzz scenario triggers egress)
  E1  Self-propagating worm            1+2      DONE — Layer 1 BLOCK (heuristic + IOC); Layer 2 live BLOCK
+ B4  Destructive / persistence        2+3      DONE — live BLOCK (wiper: mass-deletion; persistence:
+                                               sensitive-file write — .npmrc/.bashrc/authorized_keys/
+                                               cron/git-hooks/node_modules/.bin), baseline-diffed
 
 Every finding carries a "vector" tag (A1…E1, or "META" for heuristic metadata signals) so
 JSON consumers can map detections to the taxonomy.
@@ -96,9 +99,17 @@ recursively scans all .js / .cjs / .mjs / .ts / .tsx / .jsx files. No execution.
                       at consumer install time.)
 
   obfuscation        eval(Buffer.from(...,'base64'))                        → BLOCK
+                     atob(...) whose file also has eval() or a Function("…")
+                       string-constructor (decoded-and-executed)           → BLOCK
                      bare eval(), long hex (8+ consecutive \xNN), long base64 → SUSPECT
+                     atob() alone, Function("…") constructor                → SUSPECT
                      (base64 inside a data: URI and short ANSI escape runs
-                      are excluded to reduce false positives.)
+                      are excluded to reduce false positives; a bare `atob`
+                      identifier / comment mention and Function.prototype are
+                      not flagged.)
+
+  computed_load      computed dynamic import() — import(<var>) or import(x+y) → SUSPECT
+                     systematic split-string obfuscation ('ht'+'tp', ≥3 in a file) → SUSPECT
 
   suspicious_strings /etc/passwd, /etc/shadow, ~/.ssh                       → BLOCK
                      process.env, os.homedir()                             → SUSPECT
@@ -106,7 +117,11 @@ recursively scans all .js / .cjs / .mjs / .ts / .tsx / .jsx files. No execution.
   network_imports    require/import of axios, node-fetch, cross-fetch, got,
                      superagent, request, ws, socket.io, http(s)-proxy-agent,
                      undici                                                → SUSPECT
-  shell_exfil        child_process exec/spawn of curl / wget / nc          → SUSPECT
+  shell_exfil        child_process exec/spawn of curl / wget / nc / ncat /
+                     python / perl / ruby, a /dev/tcp/ socket, or `base64 -d` → SUSPECT
+
+  capability_notes   worker_threads import, *.wasm reference                → INFO
+                     (low-weight capability surface — common in benign code)
 
   dynamic_require    require(<variable>) — non-literal argument             → SUSPECT
 
@@ -148,16 +163,35 @@ Both install runs use the SAME working dir (reset to pristine between them) so
 CWD-relative reads (.npmrc, package.json, node_modules/…) are byte-identical and
 cancel in the diff.
 
+The strace syscall set is broadened beyond reads/exec/connect to make file
+WRITES, DELETES, RENAMES and CHMODs visible (wipers, persistence-file drops,
+node_modules pollution): execve, open, openat, openat2, connect, unlink,
+unlinkat, rename, renameat, renameat2, chmod, fchmodat (bare `write` is
+deliberately omitted — log volume). Layer2Profile gains file_writes /
+file_deletes accordingly.
+
 Detection rules (applied to the diff, src/layer2/classify.rs):
 
   E1 worm egress        DNS/connect to registry.npmjs.org, api.github.com,
                         webhook.site, 169.254.169.254               → BLOCK
+  C1 ip_literal_egress  connect() to a public IPv4 literal — closes the
+                        DNS-sinkhole bypass where malware hardcodes a C2 IP → SUSPECT
   B1 install script     unexpected child process during install phase;
-                        +network/sensitive path access               → SUSPECT/BLOCK
+                        +network/sensitive/write/wipe                → SUSPECT/BLOCK
   sensitive file read   /etc/passwd, ~/.ssh, .npmrc, .aws/creds     → BLOCK
-  C1 import side effect network/process/file activity during import phase → SUSPECT/BLOCK
+  B4 sensitive_file_write  write/modify of .npmrc / .bashrc / authorized_keys /
+                        crontab / .git/hooks / node_modules/.bin     → BLOCK
+  B4 mass_deletion      ≥20 package-attributable unlinks (wiper)     → BLOCK
+  C1 import side effect network/process/file write/delete during import phase → SUSPECT/BLOCK
   C2 DNS tunneling      many distinct qnames or encoded labels      → SUSPECT/BLOCK
   C3 native addon       *.node file opened/loaded at import         → SUSPECT
+
+All write/delete rules are baseline-diffed, and writes/deletes to ephemeral or
+system scratch (/tmp, /dev incl. /dev/shm, /proc, /sys, /run, /var/tmp,
+/var/cache, /etc/localtime, */faketime*) are excluded — this is what keeps the
+Layer 3 clock scenario honest (libfaketime, LD_PRELOAD'd only in the mutated
+run, writes/unlinks its own /dev/shm/faketime_* files that would otherwise
+survive the diff and false-positive every benign package).
 
 Findings from both phases are de-duplicated. Implementation note: musl/alpine node
 emits the plain `open` syscall (not `openat`); the strace filter and parser handle
@@ -184,7 +218,9 @@ baseline and classifies only the mutation-induced (new) events.
                   Detects: time-bomb payloads.
 
   env (D2)        strip CI signals (CI, GITHUB_ACTIONS, CONTINUOUS_INTEGRATION),
-                  set HOME=/home/developer, USER=dev.
+                  set HOME=/home/developer, USER=dev, NODE_ENV=production,
+                  TERM=xterm-256color (the last two widen the developer-machine
+                  spoof to catch NODE_ENV- and TTY-gated payloads too).
                   Detects: environment-triggered (CI-evasion) payloads.
 
   fuzz (D3)       docker/fuzz_exports.js auto-enumerates public exports (module
@@ -268,7 +304,8 @@ Docker prerequisite (Layers 2/3, --full):
     Requires: docker CLI accessible, --cap-add=SYS_PTRACE capability available
     (checked up front; a confirmed denial fails fast rather than silently
      producing empty logs).
-    WSL2 note: `sudo service docker start` (no systemd by default).
+    WSL2 note (Arch): `sudo systemctl start docker` (Arch WSL ships systemd as
+    PID 1). On distros without systemd, use `sudo service docker start`.
 
 
 -------------------------------------------------------------------------------
@@ -282,6 +319,12 @@ All three are embedded into the binary at compile time via include_str! and carr
 provenance header (source + date). One entry per line; blank lines and '#' comments
 are ignored. Add entries and rebuild to extend coverage.
 
+Runtime-extensible lists (no recompile): point these env vars at a file (same
+one-per-line format) to ADD to the embedded defaults (additive, never replacing):
+    NPM_PRE_SCAN_IOCS           extra worm IOC SHA-256 hashes (data/worm_iocs.txt)
+    NPM_PRE_SCAN_EGRESS_HOSTS   extra worm-egress hostnames (Layer 2/3 classifier)
+See src/runtime_lists.rs (merge_runtime_lines — additive-over-embedded, never panics).
+
 
 -------------------------------------------------------------------------------
  TESTING
@@ -290,11 +333,13 @@ are ignored. Add entries and rebuild to extend coverage.
     cargo test --no-fail-fast -- --ignored         # live Docker tests (requires Docker)
 
 Test counts (current):
-    164 offline tests — unit (Levenshtein, namespace, scoring, aggregation, Layer 1
-        static checks, Layer 2/3 diff+classify, homoglyph fold, FP-controls, …),
+    217 offline tests — unit (Levenshtein, namespace, scoring, aggregation, Layer 1
+        static checks incl. atob/Function-ctor/computed-load/capability-notes, Layer 2/3
+        diff+classify incl. file-write/mass-deletion/ip-literal, homoglyph fold, FP-controls, …),
         Layer 0/1 dummy integration, Layer 2 fixture classify, Layer 3 diff.
-    12  live Docker tests (#[ignore]d, require Docker):
-        5 layer2_dynamic (B1/C1/C2/C3/E1), 4 layer3_dynamic (D1/D2/D3 + benign control),
+    15  live Docker tests (#[ignore]d, require Docker):
+        8 layer2_dynamic (B1/C1/C2/C3/E1 + B4 wiper + B4 persistence + C1 ip-egress),
+        4 layer3_dynamic (D1/D2/D3 + benign control),
         2 full_pipeline (timebomb + benign), 1 full_registry (registry-name smoke).
 
 Dummy packages (gitignored; payload-free; never published):
@@ -311,6 +356,9 @@ Dummy packages (gitignored; payload-free; never published):
     dummy_import_time       Layer 2 (C1)  VERIFIED  BLOCK  (live Docker, via diff)
     dummy_slow_exfil        Layer 2 (C2)  VERIFIED  BLOCK  (live Docker, via diff)
     dummy_binary            Layer 2 (C3)  VERIFIED  SUSPECT (live Docker, via diff)
+    dummy_wiper             Layer 2 (B4)  VERIFIED  BLOCK  (live Docker; mass deletion)
+    dummy_persistence       Layer 2 (B4)  VERIFIED  BLOCK  (live Docker; sensitive-file write)
+    dummy_ip_egress         Layer 2 (C1)  VERIFIED  SUSPECT (live Docker; public-IP-literal connect)
     dummy_timebomb          Layer 3 (D1)  VERIFIED  SUSPECT (live Docker; clock scenario)
     dummy_env_triggered     Layer 3 (D2)  VERIFIED  SUSPECT (live Docker; env scenario)
     dummy_api_triggered     Layer 3 (D3)  VERIFIED  SUSPECT (live Docker; fuzz scenario)
@@ -332,12 +380,14 @@ Dummy packages (gitignored; payload-free; never published):
       signatures.rs        ECDSA-P256 registry signature verification
       namespace.rs         unscoped-vs-scoped namespace-conflict detection
       combosquat.rs        popular-token + suspicious-affix heuristic (A4)
+      runtime_lists.rs     additive runtime extension of embedded IOC/egress lists (env-file loader)
       models.rs            Verdict enum, Finding, CheckResult, scoring
       report.rs            RiskReport, aggregate(), run_full_local/registry(), LayerStatus
       layer1/
         mod.rs             run_layer1() / _local() / _extracted() / run_version_diff_local()
         tarball.rs         tarball URL resolution + download/extract (pub)
-        checks.rs          static source checks (install/obfuscation/strings/network/shell/require)
+        checks.rs          static source checks (install/obfuscation/strings/network/shell/
+                           computed-load/capability-notes/require)
         version_diff.rs    previous-vs-latest tarball line diff
         worm_signature.rs  three-category worm heuristic + SHA-256 IOC lookup (E1)
       layer2/

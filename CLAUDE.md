@@ -1,5 +1,5 @@
 # CLAUDE.md
-> Last updated: 2026-07-02 (v13)
+> Last updated: 2026-07-12 (v15)
 
 ---
 
@@ -89,6 +89,36 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 ---
 
 ## Change Log
+
+### v15: Environment migration (WSL Ubuntu → WSL Arch) + doc re-sync, re-verified on Arch (2026-07-12)
+Scope: user moved the dev box from WSL2/Ubuntu 26.04 to **WSL2/Arch Linux** and asked to read
+CLAUDE.md + README.md in full, verify all documented context against the actual repo, and reflect the
+environment change. **No detection logic changed.** The only source edit was a fixture-hash refresh
+(below); everything else is docs + regenerated gitignored fixtures.
+- **Environment**: now Windows 11 → WSL2 → **Arch Linux (rolling)**, repo at `/home/hkkarch/dev/npm_pre_scan`
+  (username changed hkkhpsc→hkkarch). Fresh Arch had no Rust and no Docker: installed **rustup** (user-level,
+  stable 1.97) + **docker** (pacman, systemd `enable --now`; Arch WSL runs systemd as PID 1 → `systemctl`,
+  not `service`). Repo was checked out **root:root** (as after the v10 machine move) → `sudo chown -R` +
+  `git config --add safe.directory` before cargo could build. Docker group needs a re-login; ran the live
+  suite under `sg docker -c '…'`. See the **Environment** section for specifics.
+- **Doc drift fixed (README was last written at v13, never synced for v14; CLAUDE.md's per-layer sections
+  lagged its own v14 changelog)**: added the **B4** vector row (destructive/persistence) to the coverage
+  table; added v14 Layer 1 static checks (atob/Function-ctor, computed `import()`, split-string,
+  expanded shell-exfil, worker_threads/.wasm INFO); added v14 Layer 2 rules (sensitive_file_write,
+  mass_deletion, ip_literal_egress, file_writes/file_deletes profile, broadened syscall set, ephemeral
+  filter); documented the runtime-extensible lists (`NPM_PRE_SCAN_IOCS` / `NPM_PRE_SCAN_EGRESS_HOSTS`);
+  added `src/runtime_lists.rs` to the layout; Layer 3 env-scenario widening (NODE_ENV/TERM); corrected
+  test counts to **217 offline / 15 live**; Arch/systemd docker-start note.
+- **Regenerated gitignored `dummy_packages/`** (absent on a fresh clone, same as the v10 move): all 15
+  dummies recreated from their specs + the assertions in `tests/*.rs`. The `dummy_shai_hulud/infected/bundle.js`
+  IOC hash could not be reversed, so — exactly as at v10 — bundle.js was recreated and its SHA-256 refreshed
+  in `data/worm_iocs.txt` (line 18) **and** in the `load_iocs_skips_header_comments` unit-test assertion
+  (`src/layer1/worm_signature.rs`). New hash: `a93763f6…eaa10`. infected/index.js drives the live E1 path
+  with an import-time DNS lookup to api.github.com (payload-free, sinkholed).
+- **Re-verified on Arch**: offline `cargo test` = **217 passed / 0 failed**; live
+  `cargo test --no-fail-fast -- --ignored` (Docker 29.6.1, image rebuilt) = **15/15** — 8 layer2_dynamic
+  (B1/C1/C2/C3/E1 + B4 wiper + B4 persistence + C1 ip-egress), 4 layer3_dynamic (D1/D2/D3 + benign),
+  2 full_pipeline, 1 full_registry. libfaketime + baseline-diff behave identically on Arch's WSL2 kernel.
 
 ### v14: Detection-coverage expansion — file-tampering class, IP-literal egress, static broadening, runtime-extensible lists (2026-07-03)
 Scope: user asked to "review the project, make better workflows, expand detect and defense coverage."
@@ -381,12 +411,18 @@ src/layer1/
 data/worm_iocs.txt — known-IOC SHA-256 list, embedded at compile time
 
 Checks:
-  install_script      scripts.pre/install/postinstall      → SUSPECT
+  install_script      scripts.pre/install/postinstall/prepare → SUSPECT
   obfuscation         eval(Buffer.from())                  → BLOCK
+                      atob(...) + eval/Function-ctor       → BLOCK (v14: decoded-and-executed)
                       eval(), hex, long base64             → SUSPECT
+                      atob() alone, Function("…") ctor     → SUSPECT (v14)
+  computed_load       computed import(x+y) / import(var)   → SUSPECT (v14)
+                      systematic split-string obfuscation (≥3 'ht'+'tp' fragments) → SUSPECT (v14)
   suspicious_strings  /etc/passwd, /etc/shadow, ~/.ssh     → BLOCK
                       process.env, os.homedir()            → SUSPECT
-  network_imports     require(axios/node-fetch/https/…)    → SUSPECT
+  network_imports     require(axios/node-fetch/https/ws/undici/…) → SUSPECT
+  shell_exfil         child_process + curl/wget/nc/python/perl/ruby/`/dev/tcp/`/`base64 -d` → SUSPECT (v14)
+  capability_notes    worker_threads, *.wasm reference     → INFO (v14, low-weight)
   dynamic_require     require(variable)                    → SUSPECT
   version_diff        newly-introduced eval(Buffer.from)/sensitive → BLOCK
                       newly-introduced eval/network/process.env    → SUSPECT
@@ -413,13 +449,30 @@ Architecture: dumb container (raw logs only) + smart Rust (parse + classify)
 Network model: --network=none + in-container dnsmasq sinkhole (address=/#/127.0.0.1, no upstream).
 Every DNS lookup is logged with its qname; connect() destinations captured by strace.
 
+Profile (v14): Layer2Profile also carries file_writes / file_deletes (both #[serde(default)]),
+populated by parse_open's O_WRONLY/O_RDWR/O_CREAT/O_TRUNC write detection + parse_unlink/parse_rename/
+parse_chmod. Broadened strace set: execve,open,openat,openat2,connect,unlink,unlinkat,rename,renameat,
+renameat2,chmod,fchmodat (bare `write` deliberately omitted — log volume).
+
 Detection rules (classify):
   E1 worm egress       DNS/connect to registry.npmjs.org, api.github.com, webhook.site, 169.254.169.254 → BLOCK
-  B1 install script    child process (unexpected) during install phase; +network/sensitive → BLOCK     → SUSPECT/BLOCK
+  C1 ip_literal_egress connect() to a public IPv4 literal (DNS-sinkhole bypass)                        → SUSPECT (v14)
+  B1 install script    child process (unexpected) during install phase; +network/sensitive/write/wipe → BLOCK → SUSPECT/BLOCK
   sensitive file read  /etc/passwd, /etc/shadow, ~/.ssh, .npmrc, .aws/credentials, .git-credentials   → BLOCK
-  C1 import side effect network/process/file-write activity during import phase                        → SUSPECT/BLOCK
+  B4 sensitive_file_write .npmrc/.bashrc/authorized_keys/cron/git-hooks/node_modules/.bin written     → BLOCK (v14)
+  B4 mass_deletion     ≥20 package-attributable unlinks (wiper behavior)                               → BLOCK (v14)
+  C1 import side effect network/process/file-write/delete activity during import phase                 → SUSPECT/BLOCK
   C2 DNS tunneling     many distinct qnames, or long base32/hex-looking labels                         → SUSPECT/BLOCK
   C3 native addon      *.node file opened/loaded at import                                             → SUSPECT
+
+  All write/delete rules are baseline-diffed; writes/deletes to ephemeral/system scratch (/tmp, /dev
+  incl. /dev/shm, /proc, /sys, /run, /var/tmp, /var/cache, /etc/localtime, */faketime*) are excluded
+  via is_ephemeral_or_system_path — this is what keeps the Layer 3 clock scenario honest (libfaketime's
+  own /dev/shm/faketime_* artifacts would otherwise survive the baseline diff and false-positive).
+
+  Runtime-extensible lists (v14, src/runtime_lists.rs): operators can extend worm IOCs
+  (NPM_PRE_SCAN_IOCS) and egress hosts (NPM_PRE_SCAN_EGRESS_HOSTS) via env-file paths without
+  recompiling (additive over the embedded defaults, never replacing).
 
 Files:
   docker/Dockerfile           — node:lts-alpine + strace + tcpdump + dnsmasq
@@ -619,7 +672,16 @@ Target schema (name scan with all layers populated):
 - Scope: only vectors an npm consumer can detect at install time (VCS/build compromise excluded)
 
 ## Environment
-- Windows 11 → WSL2 → Ubuntu 26.04. Location: /home/hkkhpsc/dev/npm_pre_scan (moved off NixOS 2026-07-01)
+- Windows 11 → WSL2 → **Arch Linux (rolling)**. Location: **/home/hkkarch/dev/npm_pre_scan**
+  (moved off WSL2/Ubuntu 26.04 on 2026-07-12; previously moved off NixOS 2026-07-01).
+- Toolchain on this machine: Rust via **rustup** (user-level, `~/.cargo`; stable 1.97) — installed
+  because a fresh Arch WSL had no `cargo`/`rustc`. Docker via **pacman** + systemd
+  (`systemctl enable --now docker`); Arch WSL ships systemd as PID 1, so it is `systemctl`, NOT
+  `service`. Repo was checked out **root:root** on this box (as after the v10 NixOS→Ubuntu move) and
+  needed `sudo chown -R hkkarch:hkkarch` before cargo could write `target/`; `git config --global
+  --add safe.directory` was also required.
+- Docker group membership takes effect on next login; in a session where the shell predates
+  `usermod -aG docker`, run docker-invoking commands under `sg docker -c '…'` (or `sudo docker`).
 
 ## References (independent justification base)
 - Ladisa et al., "SoK: Taxonomy of Attacks on OSS Supply Chains", IEEE S&P 2023 — classification base

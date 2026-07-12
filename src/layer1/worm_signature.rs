@@ -223,7 +223,7 @@ mod tests {
             "no loaded IOC hash should start with '#'"
         );
         assert!(iocs.contains("46faab8ab153fae6e80e7cca38eab363075bb524edd79e42269217a083628f09"));
-        assert!(iocs.contains("fbe31a8a58f864b736b7bed0e1b6f1bfc1fff447ad7397abb51bbd702e1b08c8"));
+        assert!(iocs.contains("a93763f6ab091f65976482aabd82af5d152210039986e508f0df5811309eaa10"));
         assert!(iocs.len() >= 2, "expected at least the 2 known IOC hashes, got {}", iocs.len());
     }
 
