@@ -22,33 +22,53 @@ Out of scope: VCS/CI/build-system compromise (not detectable by a package scanne
     Layer 2  Dynamic — baseline diff [DONE]   live Docker verified (strace + dnsmasq)
     Layer 3  Dynamic — condition mut [DONE]   live Docker verified (libfaketime, env spoof, API fuzz)
     Scoring  Aggregate risk score    [DONE]   cross-layer weighted noisy-OR
+    Eval     Batch harness + corpus  [DONE]   --eval; 6 arms measured (v17)
+    Precision Verdict calibration    [OPEN]   96.3% FPR on legitimate packages — see EVALUATION
 
 All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-verified.
+
+⚠ v17 measured the tool against real packages for the first time. Detection is good
+  (88.8% Layer-1 recall on 499 real malicious packages); the verdict logic on top is not
+  (26 of 27 legitimate popular packages accused, 12 with a hard BLOCK). Do not cite a
+  performance figure without reading the EVALUATION section below.
 
 
 -------------------------------------------------------------------------------
  ATTACK-VECTOR COVERAGE  (Ladisa et al. IEEE S&P 2023 taxonomy)
 -------------------------------------------------------------------------------
 
- ID  Attack vector                    Layer    Status
- --  -------------------------------- ------   ------
- A1  Typosquatting                    0        DONE — BLOCK (edit_dist ≤1; homoglyph-folded)
- A2  Dependency Confusion             0        DONE — BLOCK (unscoped vs scoped namespace)
- A3  Account Hijacking                0        DONE — SUSPECT (maintainer change detection)
- A4  Combosquatting                   0        DONE — SUSPECT (popular-token + suspicious affix)
- B1  Install-time script              1+2      DONE — Layer 1 SUSPECT + Layer 2 live BLOCK
- B2  Obfuscation (eval+base64, hex)   1        DONE — BLOCK (eval+Buffer.from)
- B3  Malicious version update         1        DONE — BLOCK (newly-introduced eval/sensitive diff)
- C1  Import-time execution            2        DONE — live BLOCK (import-phase side effects)
- C2  Slow exfiltration (DNS tunnel)   2        DONE — live BLOCK (encoded subdomain labels)
- C3  Hidden binary (.node addon)      2        DONE — live SUSPECT (native addon open)
- D1  Time Bomb (date/time-gated)      3        DONE — live SUSPECT (clock scenario triggers egress)
- D2  Environment-triggered            3        DONE — live SUSPECT (env scenario triggers egress)
- D3  Trigger-on-use (API-gated)       3        DONE — live SUSPECT (fuzz scenario triggers egress)
- E1  Self-propagating worm            1+2      DONE — Layer 1 BLOCK (heuristic + IOC); Layer 2 live BLOCK
- B4  Destructive / persistence        2+3      DONE — live BLOCK (wiper: mass-deletion; persistence:
-                                               sensitive-file write — .npmrc/.bashrc/authorized_keys/
-                                               cron/git-hooks/node_modules/.bin), baseline-diffed
+ Coverage is complete; the "v17 measured" column is what six real-corpus arms observed
+ (fires = times the vector accused anything; FP = of those, how many were legitimate).
+
+ ID  Attack vector                    Layer    Implemented                          v17 measured
+ --  -------------------------------- ------   -----------------------------------  --------------------------
+ A1  Typosquatting                    0        BLOCK (edit_dist ≤1; homoglyph-fold) ! 3054 fires / 3 FP; recall 25.7%
+ A2  Dependency Confusion             0        BLOCK (unscoped vs scoped namespace) ! 5 fires / 3 FP; no real TP
+ A3  Account Hijacking                0        SUSPECT (maintainer change)          X 8 fires, ALL 8 on legit pkgs
+ A4  Combosquatting                   0        SUSPECT (token + suspicious affix)   OK 410 fires / 0 FP
+ B1  Install-time script              1+2      L1 SUSPECT + L2 live BLOCK           OK 359 fires / ! 10 FP
+ B2  Obfuscation (eval+base64, hex)   1        BLOCK (eval+Buffer.from)             ! 392 fires / 36 FP; misses
+                                                                                      the obfuscator.io family
+ B3  Malicious version update         1        BLOCK (newly-introduced eval/diff)   X 2 fires, both on legit pkgs
+ C1  Import-time execution            2        live BLOCK (import side effects)     OK 25 fires / 0 FP
+ C2  Slow exfiltration (DNS tunnel)   2        live BLOCK (encoded labels)          OK 10 fires / 0 FP
+ C3  Hidden binary (.node addon)      2        live SUSPECT (native addon open)     - dummy only, no real sample
+ D1  Time Bomb (date/time-gated)      3        live SUSPECT (clock scenario)        - dummy only, no real sample
+ D2  Environment-triggered            3        live SUSPECT (env scenario)          - 9 fires / 0 FP, some noise
+ D3  Trigger-on-use (API-gated)       3        live SUSPECT (fuzz scenario)         ! 2 fires / 1 FP (structural)
+ E1  Self-propagating worm            1+2      L1 BLOCK (heuristic + IOC) + L2      OK 194 fires, 5/5 detected;
+                                                                                      IOC matched real Shai-Hulud
+                                                                                      / ! 4 FP (release scripts)
+ B4  Destructive / persistence        2+3      live BLOCK (wiper: mass-deletion;    - 3 fires / 0 FP; real wiper
+                                               persistence: sensitive-file write —     caught, but via B2/C1
+                                               .npmrc/.bashrc/authorized_keys/
+                                               cron/git-hooks/node_modules/.bin),
+                                               baseline-diffed
+ MET age/downloads + signatures       0        SUSPECT / BLOCK                      X 57 fires / 24 FP; the
+                                                                                      signature BLOCK is a
+                                                                                      time bomb (see EVALUATION)
+
+ OK = good   ! = works but imprecise   X = fires mainly/only on legitimate packages   - = not exercised
 
 Every finding carries a "vector" tag (A1…E1, or "META" for heuristic metadata signals) so
 JSON consumers can map detections to the taxonomy.
@@ -88,6 +108,21 @@ Runs on registry metadata only; nothing is downloaded or executed.
                     signature invalid / no key → BLOCK
                     keys unavailable (network) → INFO note (never false-BLOCKs)
 
+                  ⚠ KNOWN DEFECT (v17, not yet fixed) — this is a TIME BOMB.
+                  npm rotated its registry signing key; the old key
+                  (SHA256:jl3bws…) expired 2025-01-29. Any package not
+                  republished since is still signed with it, no unexpired key
+                  matches, and the check returns BLOCK "no valid/unexpired
+                  signing key". Measured: 11 of 27 legitimate popular packages
+                  BLOCK'd (ms, mysql, d3, ffmpeg, http-proxy, node-sass,
+                  grunt-cli, babel-cli, escape-string-regexp, shadowsocks,
+                  sqlite), and it gets worse over time. It also inflates recall
+                  by firing on npm's own takedown stubs. See eval/REPORT.md #1.
+
+  ⚠ A3 `maintainer` and META `age_downloads`/`signatures` fired on legitimate
+    packages far more than on malicious ones across all six v17 arms. Treat any
+    verdict driven solely by a META finding as unreliable until fixed.
+
 
 -------------------------------------------------------------------------------
  LAYER 1 — STATIC ANALYSIS  [DONE]
@@ -108,6 +143,17 @@ recursively scans all .js / .cjs / .mjs / .ts / .tsx / .jsx files. No execution.
                       are excluded to reduce false positives; a bare `atob`
                       identifier / comment mention and Function.prototype are
                       not flagged.)
+
+                     ⚠ KNOWN GAP (v17, not yet fixed): the hex rule needs 8+
+                     CONSECUTIVE \xNN escapes, which the javascript-obfuscator
+                     family does not emit. ansi-styles@6.2.2 — the real
+                     Sept-2025 crypto clipper — passes ALL FOUR layers: 80 KB of
+                     obfuscated payload with 5,662 `0x` literals and 314 `_0x`
+                     identifiers, but only 4 \xNN escapes and zero eval / atob /
+                     Buffer.from / Function / process.env / network require.
+                     Raising this threshold 4→8 in v14 bought precision on
+                     chalk-style ANSI strings and cost this whole attack family.
+                     Proposed fix: hex-IDENTIFIER density. See eval/REPORT.md #3.
 
   computed_load      computed dynamic import() — import(<var>) or import(x+y) → SUSPECT
                      systematic split-string obfuscation ('ht'+'tp', ≥3 in a file) → SUSPECT
@@ -342,6 +388,19 @@ Docker prerequisite (Layers 2/3, --full):
     data/top_packages.txt          ~1137 popular package names (typosquat ref)
     data/top_scoped_packages.txt   94 popular scoped packages (namespace ref)
     data/worm_iocs.txt             SHA-256 IOC hashes for known worm artifacts
+                                   (holds ONE real-world hash — v17 confirmed it is the
+                                   RIGHT one: it matched the actual Shai-Hulud patient-zero
+                                   sample. Coverage is one sample wide; extend without
+                                   recompiling via NPM_PRE_SCAN_IOCS.)
+
+    eval/corpus/*.tsv              ground-truth corpora for --eval (v17). Tracked:
+                                   dummies, real_malicious_holders, parent_benign,
+                                   datadog_static, datadog_dynamic.
+                                   NOT tracked (regenerate — see eval/README.md):
+                                     eval/corpus/ossf_npm_names.tsv  216,861 names, 12 MB
+                                   NEVER commit:
+                                     eval/samples/  live malware, encrypted at rest (102 MB)
+                                     eval/runs/     per-run result data (287 MB for 6 arms)
 
 All three are embedded into the binary at compile time via include_str! and carry a
 provenance header (source + date). One entry per line; blank lines and '#' comments

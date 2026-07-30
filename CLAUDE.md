@@ -71,29 +71,41 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 
 ### Coverage matrix (target: 100% of in-scope vectors)
 
-| ID | Attack vector | Trigger | Layer | Dummy package | Status |
-|----|---------------|---------|-------|---------------|--------|
-| A1 | Typosquatting | metadata | Layer 0 | dummy_typosquat | ✅ DONE |
-| A2 | Dependency Confusion | metadata | Layer 0 | dummy_dep_confusion | ✅ DONE |
-| A3 | Account Hijacking (maintainer change) | metadata | Layer 0 | dummy_hijack | ✅ DONE |
-| A4 | Combosquatting | metadata | Layer 0 | `lodash-utils-fix` (name test) | ✅ DONE |
-| B1 | Install-time script (pre/postinstall) | install | Layer 1+2 | dummy_install_time | ✅ DONE (Layer 2 live-verified: BLOCK) |
-| B2 | Obfuscation (eval+base64, hex) | install/import | Layer 1 | dummy_obfuscated | ✅ DONE |
-| B3 | Malicious version update (legit pkg subversion) | install/import | Layer 1 (version diff) | dummy_malicious_update | ✅ DONE |
-| C1 | Import-time execution (top-level index.js) | import | Layer 2 | dummy_import_time | ✅ DONE (Layer 2 live-verified: BLOCK) |
-| C2 | Slow exfiltration (DNS tunneling) | import/run | Layer 2 | dummy_slow_exfil | ✅ DONE (Layer 2 live-verified: BLOCK) |
-| C3 | Hidden binary (.node C extension) | import/run | Layer 2 | dummy_binary | ✅ DONE (Layer 2 live-verified: BLOCK) |
-| D1 | Time Bomb (date/time-gated) | condition | Layer 3 | dummy_timebomb | ✅ DONE (L3 live-verified: clock scenario triggers DNS) |
-| D2 | Environment-triggered (CI evasion) | condition | Layer 3 | dummy_env_triggered | ✅ DONE (L3 live-verified: env scenario triggers DNS) |
-| D3 | Trigger-on-use (API-call-gated) | run-time | Layer 3 | dummy_api_triggered | ✅ DONE (L3 live-verified: fuzz scenario triggers DNS) |
-| E1 | Self-propagating worm (Shai-Hulud) | install/import/run | Layer 1 (worm signature) + Layer 2/3 | dummy_shai_hulud | ✅ DONE (L1 static + L2 live worm-egress BLOCK); L3 TODO |
-| B4 | Destructive / persistence (wiper, dotfile/cron/git-hook/authorized_keys tampering, node_modules pollution) | install/import/run | Layer 2/3 (file-write + mass-deletion, baseline-diffed) | dummy_wiper, dummy_persistence | ✅ DONE v14 (L2/L3 live-verified: wiper→BLOCK, persistence→BLOCK) |
+**Coverage is DONE. Precision is not** — v17 measured every vector against real packages for the
+first time. `Implemented` means the rule exists and its dummy verifies it; `Real-corpus evidence`
+is what six experiment arms actually observed (fires = times the vector accused anything;
+FPs = of those, how many were legitimate packages). Full numbers: `eval/REPORT.md`.
+
+| ID | Attack vector | Layer | Dummy | Implemented | Real-corpus evidence (v17) |
+|----|---------------|-------|-------|-------------|----------------------------|
+| A1 | Typosquatting | 0 | dummy_typosquat | ✅ | ⚠ 3054 fires / **3 FPs**. Recall **25.7%** on the hand-labelled 2017 campaign; 2 of 9 hits accidental. `sqlite` BLOCK'd. |
+| A2 | Dependency Confusion | 0 | dummy_dep_confusion | ✅ | ⚠ 5 fires / **3 FPs**, incl. `babel-cli` BLOCK. No real TP observed. |
+| A3 | Account Hijacking (maintainer change) | 0 | dummy_hijack | ✅ | ⛔ **8 fires, ALL 8 on legitimate packages.** Zero true positives in the whole experiment. |
+| A4 | Combosquatting | 0 | `lodash-utils-fix` (name test) | ✅ | ✅ 410 fires / **0 FPs** — the cleanest Layer 0 check. |
+| B1 | Install-time script | 1+2 | dummy_install_time | ✅ | ✅ 359 fires on real malware / ⚠ 10 FPs (`node-sass`, `sqlite3`, `bcrypt`, `axios`, `fabric` all have legitimate hooks). |
+| B2 | Obfuscation (eval+base64, hex) | 1 | dummy_obfuscated | ✅ | ⚠ 392 fires / **36 FPs** (minified `jquery`/`lodash`/`d3`). **Misses the javascript-obfuscator family** → `ansi-styles@6.2.2` passes all 4 layers. |
+| B3 | Malicious version update | 1 (version diff) | dummy_malicious_update | ✅ | ⛔ **2 fires, both on legitimate packages.** No path through the harness (needs a prev/latest pair), so recall is unmeasured. |
+| C1 | Import-time execution | 2 | dummy_import_time | ✅ | ✅ 25 fires / **0 FPs**. |
+| C2 | Slow exfiltration (DNS tunneling) | 2 | dummy_slow_exfil | ✅ | ✅ 10 fires / **0 FPs**. |
+| C3 | Hidden binary (.node addon) | 2 | dummy_binary | ✅ | ○ 1 fire (the dummy only) — no real sample exercised it. |
+| D1 | Time Bomb (date/time-gated) | 3 | dummy_timebomb | ✅ | ○ 1 fire (the dummy only) — no condition-gated real sample in the corpus. |
+| D2 | Environment-triggered (CI evasion) | 3 | dummy_env_triggered | ✅ | ○ 9 fires / 0 FPs, but some are likely scenario noise (see dummy_persistence mis-attribution). |
+| D3 | Trigger-on-use (API-gated) | 3 | dummy_api_triggered | ✅ | ⚠ 2 fires / **1 FP** (`nodemailer` — the fuzzer caused the network activity it flagged). Structural, not a threshold. |
+| E1 | Self-propagating worm (Shai-Hulud) | 1 (+2/3) | dummy_shai_hulud | ✅ | ✅✅ **194 fires, 5/5 expected detected.** The one real IOC hash matched actual Shai-Hulud patient zero (`@ctrl/tinycolor@4.1.1`). ⚠ 4 FPs: BLOCKs `fabric`/`node-sass` for shipping a release script. |
+| B4 | Destructive / persistence (wiper, dotfile/cron/git-hook/authorized_keys, node_modules) | 2/3 | dummy_wiper, dummy_persistence | ✅ | ○ 3 fires / 0 FPs; `node-ipc@12.0.1` (real protestware wiper) was caught, but via B2/C1 rather than B4. |
+| META | age/downloads + signatures (heuristic metadata) | 0 | — | ✅ | ⛔ 57 fires / **24 FPs**. `signatures` → BLOCK is a time bomb (npm's old signing key expired 2025-01-29) and accounts for 11 of 12 BLOCK-level FPs. |
+
+Legend: ✅ good · ⚠ works but imprecise · ⛔ fires mainly or only on legitimate packages · ○ not exercised by real data
 
 > A4 and B3 promoted from candidates to DONE (implemented and verified via integration tests).
 > E1 Layer 1 static detection done (worm_signature.rs); Layer 2 dynamic worm-egress live-verified (BLOCK); Layer 3 deferred.
 > D1/D2/D3 promoted to DONE (Layer 3 condition mutation, live Docker verified 2026-07-01).
-> **All in-scope detection vectors (A1–E1) are now DONE and verified.** Remaining work is risk-score aggregation, not coverage.
+> **All in-scope detection vectors (A1–E1) are DONE and verified.**
 > v14: added **B4** (destructive/persistence + wiper, Layer 2/3) plus IP-literal egress, Layer 1 static broadening (atob/Function-ctor/computed-import/expanded shell-exfil/worker_threads/.wasm), and runtime-extensible IOC/egress lists — deepening detection beyond the original A1–E1 set.
+> **v17: coverage confirmed, precision measured and found wanting.** Three checks (A3, B3, and
+> `signatures`) fired mainly or exclusively on legitimate packages across six arms. Coverage was
+> the v5 hard requirement and it is met; the v17 result is that *coverage without a measured
+> false-positive rate was never sufficient*, and the fix queue is in the Task Checklist.
 
 ---
 
@@ -512,7 +524,11 @@ Docker **12/12** (5 layer2_dynamic + 4 layer3_dynamic + 2 full_pipeline + 1 full
 ```
 src/
   checker.rs      run_layer0(name) → CheckResult {verdict, findings}
+                  run_layer0_name_only(name) — A1/A2/A4 only, ZERO network (v17; the
+                  216k-name sweep runs in 43.7s and is byte-reproducible)
   registry.rs     npm registry + downloads API (reqwest blocking)
+                  fetch_package_info → (FetchStatus, Option<Value>): 404 vs transient
+                  failure kept apart, so a timeout can't masquerade as "removed" (v17)
   typosquat.rs    levenshtein() + check_typosquat() vs top_packages.txt (~1137 pkgs)
   age_check.rs    age < 7 days + download spike ratio (5× threshold)
   maintainer.rs   first-version vs latest-version maintainer set comparison
@@ -520,6 +536,7 @@ src/
   namespace.rs    unscoped name vs top_scoped_packages.txt (94 scoped pkgs)
   combosquat.rs   popular-token + suspicious-affix heuristic (A4)
   toplist.rs      --refresh-top: live top-package sweep (npm search API) + 24h cache + union merge (v16)
+  eval/           evaluation harness (--eval): corpus/record/metrics/runner/samples (v17)
   models.rs       Verdict enum, Finding type, CheckResult struct
   main.rs         CLI: npm-pre-scan [--json] [--no-color] [--refresh-top] <pkg> [<pkg>...]
 
@@ -533,6 +550,12 @@ Binary:
   npm-pre-scan --layer3 <dir>      (Layer 3 condition mutation — requires Docker)
   npm-pre-scan --full <name|dir>   (full pipeline → aggregate risk report; requires Docker)
                                     <name>: L0+L1+L2+L3 (download once); <dir>: L1+L2+L3
+  npm-pre-scan --eval <manifest>   (v17: batch-scan a ground-truth corpus → records.jsonl,
+                                    results.csv, findings.csv, metrics.json; repeatable.
+                                    --out-dir / --eval-mode name-only|registry|full|auto /
+                                    --docker-timeout <s> / --eval-evidence. See eval/README.md.
+                                    Exit 0=complete, 4=degraded, 5=unrunnable — 0-3 stay
+                                    reserved for per-package verdicts.)
   exit 0=PASS  1=SUSPECT  2=BLOCK  3=ERROR
   (name scans also emit the aggregate RiskReport: L0+L1, layer_2/layer_3 not_run)
   (-v/--verbose: per-layer progress + per-scenario diff evidence)
@@ -548,9 +571,23 @@ Severity rules:
   age<7d + spike                                     → SUSPECT
   maintainer change                                  → SUSPECT
   signature missing                                  → SUSPECT
-  signature invalid / no valid key                   → BLOCK
+  signature invalid / no valid key                   → BLOCK   ⚠ SEE BELOW
   (any BLOCK present)                                → verdict BLOCK
   (any SUSPECT, no BLOCK)                            → verdict SUSPECT
+
+⚠ MEASURED DEFECTS (v17, eval/REPORT.md — not yet fixed):
+  • `signatures` → BLOCK is a TIME BOMB. npm rotated its registry signing key; the old key
+    (SHA256:jl3bws…) expired 2025-01-29, so any package not republished since has no
+    unexpired matching key and is BLOCK'd. 11 of 27 legitimate popular packages, and
+    growing with time. It also fabricates recall: 23 of arm B's 32 "true positives" came
+    solely from this check firing on npm's own security-holder stub.
+  • `typosquat`/`namespace` → BLOCK on legitimate packages: `sqlite` (distance 1 from
+    `sqlite3`) and `babel-cli` (flattens to `@babel/cli`). Fix direction: check whether the
+    candidate is itself established — Layer 0 already fetches age and download count.
+  • A1 measured recall is 25.7% (9/30 on the hand-labelled 2017 campaign, and 2 of those 9
+    are accidental matches). Two independent causes: `bare_name` strips only `@scope/` so
+    `jquery.js` is distance 3 from `jquery` (9 misses), and parents like `ffmpeg`/`fabric`/
+    `shadowsocks` are absent from top_packages.txt (12 misses).
 ```
 
 ### Layer 1 — DONE
@@ -720,6 +757,16 @@ detections: each Finding → "{vector}: {check} ({message})".
 layer_status: per layer — "ran" | "skipped" (L1 when L0 BLOCK short-circuits) | "not_run" | "error".
 evidence: per layer — the exact new diff events (dns/connect/file/proc) L2/L3 findings fired on (shown under -v).
 
+v17 additions (additive; the two existing entry points became one-line wrappers):
+  FullScan { report, layers: [Option<CheckResult>;4], layer_ms, registry_status, declared_deps }
+  LayerMask([bool;4])  — ALL / from_indices / intersect; a layer this path COULD have run but
+    the caller masked off is `Skipped`, one that was never applicable stays `NotRun`
+  run_full_local_collect(name, dir, mask) / run_full_registry_collect(name, version, …, mask)
+    — keep every layer's `note`, `severity` and `vector` (which `aggregate` discards), plus
+    per-layer Instant timings; `version=Some(v)` pins the tarball via get_version_tarball_url
+    and passes info:None so pkg_json comes from the pinned tarball and version_diff is skipped.
+    CheckResult is still NOT Clone — borrow, aggregate, then move.
+
 CLI: npm-pre-scan --full <name|dir> (Docker); name scans (`<pkg>`) emit RiskReport from L0+L1.
 Tests: tests/report_aggregate.rs (offline, incl. 1.00 canonical example, L2-forces-BLOCK, layer_status);
        tests/full_pipeline.rs (dummy_timebomb→SUSPECT+layer_3, dummy_benign_l3→PASS);
@@ -763,6 +810,19 @@ Target schema (name scan with all layers populated):
 | dummy_env_triggered | Layer 3 (D2) | L0-2 PASS | ✅ VERIFIED: SUSPECT (live Docker; env scenario — USER=dev/no-CI — triggers DNS) |
 | dummy_api_triggered | Layer 3 (D3) | L0-2 PASS | ✅ VERIFIED: SUSPECT (live Docker; fuzz scenario invokes run(), dormant at require) |
 | dummy_benign_l3 (control) | Layer 3 | L0-2 PASS | ✅ VERIFIED: PASS (live Docker; pure add(), no findings — precision/false-positive control) |
+
+**v17 re-verified all of the above through the batch harness (arm C): 16/16 malicious detected, 3/3
+benign controls clean — 100% recall, 0% FPR.** Which is precisely the problem with this table as
+evidence: every fixture here was authored by this project, so it can show that a rule *works* and can
+never show whether it *over-fires*. The same layers scored a 96.3% false-positive rate on 27 real
+popular packages (arm F). Two further caveats found by running it:
+
+- **`dummy_timebomb` expires 2026-09-01.** After that its payload fires at baseline too, the D1 diff
+  goes empty, and D1 detection silently drops to zero — taking `d1_timebomb_live_run` and
+  `dummy_timebomb_full_pipeline_flags_risk` with it. Re-date it or pin the harness clock.
+- **`dummy_persistence` is mis-attributed to D2.** Its `.bashrc` write is unconditional at import, so
+  the Layer 3 env scenario claims credit for behaviour it did not trigger.
+- **`dummy_slow_exfil` takes 467 s** (24× the arm C median) from 35 sequential sinkholed DNS lookups.
 
 ---
 
@@ -824,7 +884,27 @@ and could not surface any of the real-corpus findings).
 - [x] Layer 0~3 outputs → weighted risk score (src/report.rs: noisy-OR, L2 down-weighted; --full pipeline)
 - [x] JSON report output (RiskReport serde struct; --json on all modes)
 - [x] Confirm full coverage: every non-candidate in-scope vector VERIFIED (A1–E1 + D1/D2/D3 done)
-- [ ] Finalize evaluation method (TBD — dummy verification stays; OSSF real-benchmark undecided)
+- [x] Finalize evaluation method (v17: `--eval` harness + 6 arms; see Evaluation section)
+
+### Precision fixes — NEXT BUILD TASK (from eval/REPORT.md, ranked; none implemented)
+- [ ] 1. signatures.rs: stop treating an expired signing key as tampering (11/12 BLOCK-level FPs,
+        worsens with time). Verify against the key that signed; expiry → INFO. Add a pinning test.
+- [ ] 2. worm_signature: don't let ONE category BLOCK alone (`fabric`, `node-sass` flagged for
+        shipping a release script); exclude build tooling unless reached from an install hook.
+- [ ] 3. obfuscation: add a hex-IDENTIFIER-density check (`_0x[0-9a-f]{4,}` count / `0x` literal
+        ratio). The v14 hex 4→8 change let the javascript-obfuscator family through, and
+        ansi-styles@6.2.2 (real Sept-2025 clipper) passes all four layers.
+- [ ] 4. Recalibrate the static SUSPECT rules against the now-available benign corpus
+        (suspicious_strings 43 findings / obfuscation 20 / dynamic_require 8 / install_script 5).
+- [ ] 5. A1: fold a trailing `.js`/`-js`/`_js` before the distance compare; widen top_packages.txt;
+        consider scaling the distance threshold by name length (kills the d3.js→dayjs class).
+- [ ] 6. typosquat/namespace: don't accuse an established package (use the age/downloads already fetched).
+- [ ] 7. D3: require one of L2's stronger sub-signals rather than a bare import_side_effect
+        (`nodemailer` FP — the fuzzer caused the network activity it flagged).
+- [ ] 8. Vendor dependencies into the L2/L3 mount so dep-bearing packages are analysable at all
+        (only 10/27 legitimate and 28/40 malicious packages were).
+- [ ] 9. Smaller: extend worm IOCs from the DataDog corpus; a `pair` manifest kind so B3's
+        version_diff has a path through the harness; fix dummy_persistence's D2 mis-attribution.
 
 ---
 
@@ -835,6 +915,9 @@ and could not surface any of the real-corpus findings).
 - Clock manipulation: libfaketime
 - Static analysis: custom Rust (regex + string patterns)
 - Typosquatting: Levenshtein (custom Rust)
+- Evaluation: `--eval` batch harness (pure-Rust metrics; hand-rolled CSV — writer-only need,
+  and free text never enters a CSV). Corpora: OSV bulk export (`MAL-*` names) +
+  DataDog/malicious-software-packages-dataset (real payloads; `zip` crate for ZipCrypto).
 
 ## Constraints
 - npm-only (justification: most dangerous ecosystem due to install-time execution; independent of measurement paper)
@@ -842,6 +925,9 @@ and could not surface any of the real-corpus findings).
 - Dummy packages: local test only (never npm publish)
 - Layer 0 → 1 → 2 → 3 sequential, single entry point npm-pre-scan
 - Scope: only vectors an npm consumer can detect at install time (VCS/build compromise excluded)
+- Evaluation corpora are NEVER committed: eval/samples/ holds live malware (encrypted at rest,
+  gitignored), eval/runs/ holds result data, eval/corpus/ossf_npm_names.tsv is 12 MB generated.
+  Only the curated manifests + eval/README.md + eval/REPORT.md are tracked.
 
 ## Environment
 - Windows 11 → WSL2 → **Arch Linux (rolling)**. Location: **/home/hkkarch/dev/npm_pre_scan**
@@ -860,7 +946,10 @@ and could not surface any of the real-corpus findings).
 - Zheng et al., "OSCAR", ASE 2024 — comparison target, basis for Layer 3 gap
 - Duan et al., "MalOSS", NDSS 2021 — comparison target (simplistic testing limitation)
 - Huang et al., "DONAPI", USENIX Security 2024 — comparison target
-- OSSF malicious-packages GitHub repo — candidate evaluation dataset
+- OSSF malicious-packages / OSV `MAL-*` bulk export — evaluation corpus for Layer 0 name checks
+  at scale (216,885 names; the GitHub tree API truncates, the OSV zip does not)
+- DataDog/malicious-software-packages-dataset (Apache-2.0) — real malicious payloads for Layers 1-3,
+  since npm's takedown process defangs them (see eval/README.md for the safety posture)
 - (KIISC measurement paper decoupled — no citation required)
 
 ---
