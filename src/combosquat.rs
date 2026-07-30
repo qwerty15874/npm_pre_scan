@@ -29,7 +29,13 @@ pub fn check_combosquat(name: &str, top_packages: &[String]) -> Option<Map<Strin
         return None;
     }
 
-    // Build a set of popular bare names (all single-token per the data file).
+    // Build a set of popular bare names. Note: with `--refresh-top`,
+    // `top_packages` can include live-fetched multi-token names (e.g.
+    // `co-body`) alongside the curated single-token snapshot — that's
+    // harmless here: `bare_name` only strips a `@scope/` prefix, so a
+    // multi-token entry simply never equals a single `tokens[i]` below and
+    // is inert as a combosquat "popular token" match (it can, however, still
+    // strengthen the exact-popular early-exit two lines down).
     let popular_set: HashSet<&str> = top_packages.iter().map(|p| bare_name(p)).collect();
 
     // Skip if the candidate IS already a popular package (emits INFO in typosquat check).

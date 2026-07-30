@@ -1,2 +1,11 @@
 /target
 /dummy_packages
+
+# Evaluation harness artifacts.
+# eval/corpus/*.tsv is checked in EXCEPT the generated 216k-name sweep manifest
+# (12 MB); regenerate it with the recipe in eval/README.md.
+/eval/corpus/ossf_npm_names.tsv
+# Per-run result data (records.jsonl, results.csv, findings.csv, metrics.json).
+/eval/runs/
+# Downloaded malware samples. Kept ENCRYPTED at rest; never commit these.
+/eval/samples/

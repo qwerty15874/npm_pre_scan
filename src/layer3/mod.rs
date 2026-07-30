@@ -14,11 +14,10 @@
 pub mod classify;
 pub mod diff;
 
-use crate::docker::{check_ptrace_capability, docker_available, PtraceProbe};
+use crate::docker::docker_available;
 use crate::layer2::profile::{self, Layer2Profile};
 use crate::models::{CheckResult, Finding, Verdict};
 use std::path::Path;
-use std::process::Command;
 
 fn error_result(package_name: &str, note: &str) -> CheckResult {
     CheckResult {
@@ -69,14 +68,6 @@ pub fn run_layer3_local(name: &str, dir: &Path) -> CheckResult {
         return error_result(name, "Docker required for Layer 3 — install Docker to enable dynamic analysis");
     }
 
-    // Best-effort preflight, same rationale as Layer 2: a missing SYS_PTRACE
-    // capability makes strace silently produce empty logs, which would read
-    // as "no behavior change across scenarios" instead of "capture failed".
-    // Only a confirmed denial stops the run; an inconclusive probe does not.
-    if let PtraceProbe::Denied(note) = check_ptrace_capability() {
-        return error_result(name, &format!("Docker preflight failed: {}", note));
-    }
-
     let dockerfile_dir = match locate_docker_dir() {
         Some(d) => d,
         None => {
@@ -84,20 +75,15 @@ pub fn run_layer3_local(name: &str, dir: &Path) -> CheckResult {
         }
     };
 
-    // Build the shared Layer 2/3 image (Layer 3 overrides the entrypoint at run time).
+    // Preflight (SYS_PTRACE probe) + build of the shared Layer 2/3 image, memoized
+    // once per process by `docker::ensure_layer_image` (Layer 3 overrides the
+    // entrypoint at run time). Same rationale as Layer 2: a missing SYS_PTRACE
+    // capability makes strace silently produce empty logs, which would read as
+    // "no behavior change across scenarios" instead of "capture failed", so only
+    // a confirmed denial stops the run.
     let image_tag = "npm-pre-scan-layer2:latest";
-    let build_status = Command::new("docker")
-        .args(["build", "-t", image_tag, &dockerfile_dir])
-        .status();
-
-    match build_status {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            return error_result(name, &format!("Docker build failed (exit {})", s));
-        }
-        Err(e) => {
-            return error_result(name, &format!("Docker build error: {}", e));
-        }
+    if let Err(note) = crate::docker::ensure_layer_image(&dockerfile_dir, image_tag) {
+        return error_result(name, &note);
     }
 
     // Create a temp dir for output
@@ -112,35 +98,38 @@ pub fn run_layer3_local(name: &str, dir: &Path) -> CheckResult {
     };
 
     // Run the container with the Layer 3 entrypoint: mount pkg read-only, out
-    // writable, no network (dnsmasq inside the container handles DNS).
-    let run_status = Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "--network=none",
-            "--cap-add=SYS_PTRACE",
-            "--entrypoint",
-            "/run_layer3.sh",
-            "-v",
-            &format!("{}:/pkg:ro", pkg_abs.display()),
-            "-v",
-            &format!("{}:/out:rw", out_dir.path().display()),
-            "-e",
-            "PKG_DIR=/pkg",
-            "-e",
-            "OUT_DIR=/out",
-            image_tag,
-        ])
-        .status();
+    // writable, no network (dnsmasq inside the container handles DNS). Named so a
+    // wall-clock timeout can force-remove it — see `docker::run_docker`.
+    let container_name = crate::docker::container_name("l3");
+    let pkg_mount = format!("{}:/pkg:ro", pkg_abs.display());
+    let out_mount = format!("{}:/out:rw", out_dir.path().display());
+    let argv = [
+        "docker",
+        "run",
+        "--rm",
+        "--name",
+        &container_name,
+        "--network=none",
+        "--cap-add=SYS_PTRACE",
+        "--entrypoint",
+        "/run_layer3.sh",
+        "-v",
+        &pkg_mount,
+        "-v",
+        &out_mount,
+        "-e",
+        "PKG_DIR=/pkg",
+        "-e",
+        "OUT_DIR=/out",
+        image_tag,
+    ];
 
-    match run_status {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            return error_result(name, &format!("Docker run failed (exit {})", s));
-        }
-        Err(e) => {
-            return error_result(name, &format!("Docker run error: {}", e));
-        }
+    if let Err(note) = crate::docker::run_docker(
+        &argv,
+        crate::docker::docker_timeout_from_env(),
+        Some(&container_name),
+    ) {
+        return error_result(name, &note);
     }
 
     // Load baseline + mutated scenario profiles. Any missing/unreadable log

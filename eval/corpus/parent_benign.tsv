@@ -1,0 +1,56 @@
+# npm-pre-scan evaluation corpus — LEGITIMATE "PARENT" PACKAGES (benign controls)
+#
+# Purpose : the real, legitimate packages that the malicious names in
+#           eval/corpus/real_malicious_holders.tsv imitate, plus a few popular
+#           controls. Every flag raised here is a FALSE POSITIVE. This is the
+#           only arm that can produce an FPR, and the dynamic subset produces
+#           the project's first-ever measured Layer 2/3 false-positive rate.
+# Source  : parents of the 2017 typosquat campaign + high-download packages from
+#           data/top_packages.txt. Dependency counts and install hooks verified
+#           live against registry.npmjs.org on 2026-07-30 (latest dist-tag).
+# Format  : see eval/corpus/dummies.tsv header.
+# Last updated: 2026-07-30
+#
+# ================= WHY ONLY SOME ENTRIES CARRY layers=2,3 ====================
+# The Layer 2/3 sandbox runs `npm install --offline` under `--network=none`, so
+# dependencies CANNOT be fetched. A package with dependencies fails its install
+# (swallowed by `|| true`), then `require()` throws MODULE_NOT_FOUND (swallowed
+# by the try/catch) — producing an EMPTY behaviour profile that reads as a clean
+# PASS. That is a vacuous result, not evidence of precision.
+#
+# So `layers` here is set to 2,3 ONLY for packages verified to declare ZERO
+# dependencies. Dependency-bearing packages are capped at layers=0,1 and their
+# declared_deps is recorded, keeping them out of the dynamic denominators
+# instead of silently inflating the true-negative count.
+# =============================================================================
+
+# --- dependency-free: full dynamic analysis is meaningful (the FPR arm) ------
+name	jquery	parent_benign	benign	-	0,1,2,3	0 deps; parent of jquery.js
+name	nodemailer	parent_benign	benign	-	0,1,2,3	0 deps; parent of nodemailer.js / nodemailer-js
+name	shadowsocks	parent_benign	benign	-	0,1,2,3	0 deps; parent of shadowsock
+name	sqlite	parent_benign	benign	-	0,1,2,3	0 deps; parent of sqlite.js
+name	lodash	parent_benign	benign	-	0,1,2,3	0 deps; highest-profile popular control
+name	chalk	parent_benign	benign	-	0,1,2,3	0 deps; also a real 2025 compromise target
+name	ms	parent_benign	benign	-	0,1,2,3	0 deps; minimal-surface control
+name	react	parent_benign	benign	-	0,1,2,3	0 deps; large popular control
+name	semver	parent_benign	benign	-	0,1,2,3	0 deps
+name	escape-string-regexp	parent_benign	benign	-	0,1,2,3	0 deps; smallest realistic package
+name	fabric	parent_benign	benign	-	0,1,2,3	0 deps BUT has a `prepare` hook — deliberate B1 false-positive probe
+
+# --- dependency-bearing: Layer 0 + Layer 1 only (see header) -----------------
+name	cross-env	parent_benign	benign	-	0,1	2 deps; parent of crossenv / cross-env.js
+name	babel-cli	parent_benign	benign	-	0,1	15 deps; parent of babelcli
+name	d3	parent_benign	benign	-	0,1	30 deps; parent of d3.js
+name	ffmpeg	parent_benign	benign	-	0,1	1 dep; parent of ffmepg
+name	grunt-cli	parent_benign	benign	-	0,1	5 deps; parent of gruntcli
+name	http-proxy	parent_benign	benign	-	0,1	3 deps; parent of http-proxy.js
+name	mongoose	parent_benign	benign	-	0,1	7 deps; parent of mongose
+name	mssql	parent_benign	benign	-	0,1	5 deps; parent of mssql.js / mssql-node
+name	mysql	parent_benign	benign	-	0,1	4 deps; parent of mysqljs
+name	proxy	parent_benign	benign	-	0,1	2 deps; parent of proxy.js
+name	express	parent_benign	benign	-	0,1	28 deps; popular control
+name	debug	parent_benign	benign	-	0,1	1 dep; also a real 2025 compromise target
+name	axios	parent_benign	benign	-	0,1	4 deps; has a `prepare` hook — B1 false-positive probe
+name	node-sass	parent_benign	benign	-	0,1	14 deps; has install+postinstall hooks — B1 false-positive probe
+name	sqlite3	parent_benign	benign	-	0,1	4 deps; has an install hook and ships a .node addon — B1/C3 probe
+name	bcrypt	parent_benign	benign	-	0,1	2 deps; has an install hook and ships a .node addon — B1/C3 probe

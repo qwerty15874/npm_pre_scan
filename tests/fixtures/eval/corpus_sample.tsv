@@ -1,0 +1,17 @@
+# Test fixture for tests/eval_corpus.rs — exercises every `kind`, the comment
+# and blank-line discipline, the optional 7th column, and `-` sentinels.
+# Must stay in sync with src/eval/corpus.rs's parser. Not a real corpus.
+
+# a comment line, then a blank line
+
+name	expres	dummy	malicious	A1	0	name-only fixture
+version	crossenv@1.0.1	real_malicious	malicious	A1,B1	0,1	pinned historical version
+dir	dummy_packages/dummy_benign_l3	dummy	benign	-	1,2,3	precision control
+holder	ffmepg	real_malicious	malicious	A1	0	security-holding stub
+sample	malicious_intent/evil-pkg/1.0.0/2025-01-01-evil-pkg-v1.0.0.zip	datadog	malicious	-	1,2,3	datadog sample
+
+# no-note form: exactly 6 columns, trailing `note` omitted
+name	cross-env	parent_benign	benign	-	0,1
+# multi-vector, all four layers, `-` note sentinel
+dir	dummy_packages/dummy_shai_hulud/infected	dummy	malicious	E1,B2	1,2,3	-
+	name	leading-tab-is-trimmed	parent_benign	benign	-	0

@@ -1,0 +1,86 @@
+# npm-pre-scan evaluation corpus — REAL MALICIOUS PACKAGES (registry side)
+#
+# Purpose : real npm packages with published malicious-code advisories, scanned
+#           through the live registry. Measures what Layer 0 can do against
+#           real-world attacker-chosen names.
+# Source  : names cross-checked against ossf/malicious-packages (OSV MAL-*
+#           records) and the 2017 npm typosquat campaign disclosure; every
+#           `kind` below was verified live against registry.npmjs.org on
+#           2026-07-30 (holder status = `description == "security holding
+#           package"`, i.e. npm took the package down).
+# Format  : see eval/corpus/dummies.tsv header.
+# Last updated: 2026-07-30
+#
+# ============================ READ THIS FIRST ================================
+# npm's takedown process makes real malicious CODE unobtainable here:
+#
+#   kind=holder  npm replaced the package with a "security holding" stub
+#                (maintainer `npm`, latest `0.0.x-security`). The registry still
+#                returns HTTP 200. Several of these RETAIN their original
+#                version numbers with downloadable tarballs, but the content was
+#                republished DEFANGED — verified 2026-07-30, the payload is
+#                literally `console.log('this package is no longer dangerous')`.
+#                So a content-layer PASS on these is truthful, not a detection
+#                failure: the harness classifies it ARTIFACT_FN, never FN.
+#                Only Layer 0's name-based checks are meaningfully exercised.
+#
+#   kind=name    fully unpublished (registry 404). Layer 0's name checks still
+#                run (they need no network); registry checks are skipped.
+#
+# Real malicious PAYLOADS for Layers 1-3 come from the DataDog corpus instead —
+# see eval/corpus/datadog_dynamic.tsv.
+#
+# `vectors` records the attack class as documented in the disclosure (ground
+# truth), NOT a prediction that our detector fires. Whether A1 actually catches
+# `d3.js` is exactly what the experiment measures.
+# =============================================================================
+
+# --- 2017 typosquat campaign (Aug 2017, ~40 packages by one actor) -----------
+# Stole environment variables via postinstall. All taken down; parents in
+# eval/corpus/parent_benign.tsv.
+holder	crossenv	real_malicious	malicious	A1	0	typosquat of cross-env
+holder	babelcli	real_malicious	malicious	A1	0	typosquat of babel-cli
+holder	cross-env.js	real_malicious	malicious	A1	0	.js-suffix variant of cross-env
+holder	d3.js	real_malicious	malicious	A1	0	.js-suffix variant of d3
+holder	fabric-js	real_malicious	malicious	A1	0	-js-suffix variant of fabric
+holder	ffmepg	real_malicious	malicious	A1	0	transposition typosquat of ffmpeg
+holder	gruntcli	real_malicious	malicious	A1	0	typosquat of grunt-cli
+holder	http-proxy.js	real_malicious	malicious	A1	0	.js-suffix variant of http-proxy
+holder	jquery.js	real_malicious	malicious	A1	0	.js-suffix variant of jquery
+holder	mongose	real_malicious	malicious	A1	0	typosquat of mongoose
+holder	mssql-node	real_malicious	malicious	A1	0	combo/typosquat of mssql
+holder	mssql.js	real_malicious	malicious	A1	0	.js-suffix variant of mssql
+holder	mysqljs	real_malicious	malicious	A1	0	typosquat of mysql
+holder	nodecaffe	real_malicious	malicious	A1	0	typosquat of nodecafe
+holder	nodefabric	real_malicious	malicious	A1	0	typosquat of fabric
+holder	node-fabric	real_malicious	malicious	A1	0	typosquat of fabric
+holder	nodemailer-js	real_malicious	malicious	A1	0	-js-suffix variant of nodemailer
+holder	nodemailer.js	real_malicious	malicious	A1	0	.js-suffix variant of nodemailer
+holder	nodesass	real_malicious	malicious	A1	0	typosquat of node-sass
+holder	nodesqlite	real_malicious	malicious	A1	0	typosquat of sqlite3
+holder	proxy.js	real_malicious	malicious	A1	0	.js-suffix variant of proxy
+holder	shadowsock	real_malicious	malicious	A1	0	typosquat of shadowsocks
+holder	smb	real_malicious	malicious	A1	0	short-name squat
+holder	sqlite.js	real_malicious	malicious	A1	0	.js-suffix variant of sqlite
+holder	sqliter	real_malicious	malicious	A1	0	typosquat of sqlite3
+holder	sqlserver	real_malicious	malicious	A1	0	short-name squat
+holder	tkinter	real_malicious	malicious	A1	0	cross-ecosystem name squat (Python stdlib)
+
+# --- Reclaimed names: benign TODAY, so a flag here is a genuine FALSE POSITIVE
+# These three were part of the campaign but the names were later taken over by
+# legitimate projects, so `label=benign` reflects what the registry serves now.
+name	mariadb	real_malicious	benign	-	0	reclaimed by a legitimate project (54 versions, not a holder)
+name	opencv.js	real_malicious	benign	-	0	reclaimed by a legitimate project (18 versions)
+name	openssl.js	real_malicious	benign	-	0	reclaimed by a legitimate project (14 versions)
+
+# --- Other documented incidents ----------------------------------------------
+holder	flatmap-stream	real_malicious	malicious	B3	0	2018 event-stream dependency backdoor (bitcoin wallet theft)
+holder	getcookies	real_malicious	malicious	B2	0	2018 backdoor hidden in an Express middleware chain
+holder	twilio-npm	real_malicious	malicious	B1	0	2020 install-time reverse shell
+holder	discord.js-user	real_malicious	malicious	A4	0	2020 combosquat token stealer
+holder	loadyaml	real_malicious	malicious	B1	0	install-time payload
+
+# --- Fully unpublished (registry 404) — exercises the not-found path ---------
+name	electerm-tesst	real_malicious	malicious	A1	0	404: typosquat of electerm
+name	noblox.js-proxsed	real_malicious	malicious	A1	0	404: typosquat of noblox.js
+name	colourstring	real_malicious	malicious	A1	0	404: typosquat of colorstring

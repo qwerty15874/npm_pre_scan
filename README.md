@@ -60,7 +60,8 @@ JSON consumers can map detections to the taxonomy.
 Runs on registry metadata only; nothing is downloaded or executed.
 
   typosquat       Levenshtein distance against ~1137 popular packages
-                  (data/top_packages.txt, embedded at compile time). The name is
+                  (data/top_packages.txt, embedded at compile time; optionally
+                  augmented live via --refresh-top — see DATA FILES). The name is
                   lowercased and homoglyph-folded (Cyrillic/Greek confusables →
                   ASCII) before comparison, so "lodаsh" (Cyrillic а) is caught.
                     distance=1, name>=5 chars  → BLOCK
@@ -268,11 +269,12 @@ Build:
     cargo build --release    # release: target/release/npm-pre-scan
 
 Usage:
-    npm-pre-scan [--json] [--no-color] [-v|--verbose] <pkg> [<pkg> ...]
+    npm-pre-scan [--json] [--no-color] [-v|--verbose] [--refresh-top] <pkg> [<pkg> ...]
     npm-pre-scan --local  <dir>          # Layer 1 static scan of a local directory
     npm-pre-scan --layer2 <dir>          # Layer 2 dynamic analysis (requires Docker)
     npm-pre-scan --layer3 <dir>          # Layer 3 condition mutation (requires Docker)
     npm-pre-scan --full   <name|dir>     # full pipeline + aggregate risk report
+    npm-pre-scan --eval   <manifest>     # batch-evaluate a corpus → result data + metrics
 
 Modes:
     <pkg> …            registry scan: Layer 0, then Layer 1 (skips L1 if L0 BLOCKs);
@@ -282,14 +284,40 @@ Modes:
     --full <dir>       full pipeline (L1+L2+L3) on a local directory (Layer 0 = not_run,
                        no registry identity).
     --local/--layer2/--layer3 <dir>   run a single layer on a local directory.
+    --eval <manifest>  batch mode: scan a ground-truth corpus and write result data
+                       (records.jsonl / results.csv / findings.csv / metrics.json).
+                       Repeatable — several manifests share one output directory and
+                       one metrics summary. See eval/README.md.
 
 Flags:
     --json        emit raw JSON instead of the human-readable report
     --no-color    disable ANSI color output
     -v, --verbose per-layer progress + per-scenario diff evidence
+    --refresh-top live-refresh the Layer 0 top-package lists before scanning
+                  (24h on-disk cache; also via NPM_PRE_SCAN_REFRESH_TOP=1 —
+                  see DATA FILES)
+
+Evaluation flags (--eval only):
+    --out-dir <dir>        where to write result data (default eval/runs/<timestamp>)
+    --eval-mode <mode>     depth ceiling: name-only | registry | full | auto (default
+                           auto). Effective layers per entry = the manifest's `layers`
+                           column ∩ this ceiling. `name-only` is fully offline and
+                           byte-reproducible.
+    --docker-timeout <s>   wall-clock cap per `docker run`. Unset = unbounded, which is
+                           the pre-existing behaviour — but one package whose npm
+                           install hangs then stalls the whole batch. Also settable via
+                           NPM_PRE_SCAN_DOCKER_TIMEOUT.
+    --eval-evidence        keep full `evidence` arrays in records.jsonl (off by default;
+                           L2/L3 diffs can attach hundreds of events per finding)
 
 Exit codes (worst verdict across all packages / layers):
     0 = PASS    1 = SUSPECT    2 = BLOCK    3 = ERROR
+
+Exit codes in --eval mode (0-3 stay reserved for per-package verdicts, which are
+meaningless for a corpus that deliberately contains known-malicious entries):
+    0 = batch complete    4 = completed but degraded (an entry errored, timed out,
+                              or a layer failed)
+    5 = could not run (bad manifest, unwritable output directory)
 
 Examples:
     npm-pre-scan lodash                       # registry scan: Layer 0 then 1
@@ -325,6 +353,24 @@ one-per-line format) to ADD to the embedded defaults (additive, never replacing)
     NPM_PRE_SCAN_EGRESS_HOSTS   extra worm-egress hostnames (Layer 2/3 classifier)
 See src/runtime_lists.rs (merge_runtime_lines — additive-over-embedded, never panics).
 
+Live top-package refresh (--refresh-top, opt-in; src/toplist.rs):
+    Sweeps the npm registry search API (~24 two-letter seeds, one page of 250 each,
+    1.2s apart — the API 429s on faster bursts) and keeps names with >=500k weekly
+    downloads (the API has no top-N endpoint and its popularity ranking is noisy,
+    so ranking is done client-side on the per-result downloads.weekly field).
+    Fetched names are UNION-merged after the embedded snapshot — coverage can only
+    grow, and the curated list stays a stable prefix (typosquat tie-breaking is
+    order-dependent). Results are cached for 24h at
+    $NPM_PRE_SCAN_CACHE_DIR > $XDG_CACHE_HOME > ~/.cache, under npm-pre-scan/,
+    in the same one-per-line format (human-inspectable/editable).
+    Failure ladder: fresh cache → silent reuse (no network); fetch failure or a
+    rejected sweep (<200 names over the floor) → stale cache, else embedded lists,
+    with one `note:` line on stderr. A refresh problem never changes a verdict.
+    Enable per-run with --refresh-top or persistently with NPM_PRE_SCAN_REFRESH_TOP=1.
+    Default OFF: scans stay reproducible and `cargo test` stays network-free.
+    Known limit: seed-page coverage is fuzzy (a top package can miss the sweep) —
+    harmless, since the embedded snapshot is always the floor.
+
 
 -------------------------------------------------------------------------------
  TESTING
@@ -333,14 +379,22 @@ See src/runtime_lists.rs (merge_runtime_lines — additive-over-embedded, never 
     cargo test --no-fail-fast -- --ignored         # live Docker tests (requires Docker)
 
 Test counts (current):
-    217 offline tests — unit (Levenshtein, namespace, scoring, aggregation, Layer 1
+    357 offline tests — unit (Levenshtein, namespace, scoring, aggregation, Layer 1
         static checks incl. atob/Function-ctor/computed-load/capability-notes, Layer 2/3
-        diff+classify incl. file-write/mass-deletion/ip-literal, homoglyph fold, FP-controls, …),
-        Layer 0/1 dummy integration, Layer 2 fixture classify, Layer 3 diff.
-    15  live Docker tests (#[ignore]d, require Docker):
+        diff+classify incl. file-write/mass-deletion/ip-literal, homoglyph fold, FP-controls,
+        toplist parse/rank/merge/cache incl. a recorded search-API fixture, …),
+        Layer 0/1 dummy integration, Layer 2 fixture classify, Layer 3 diff,
+        plus the evaluation harness: manifest parsing (eval_corpus), metric arithmetic
+        (eval_metrics — confusion matrices, ARTIFACT_FN exclusion, sole-detector
+        attribution, null-vs-zero rates), output writers (eval_writers — CSV column
+        alignment, JSONL round-trip), and the offline Layer 0 scan path
+        (eval_offline_l0, which pins the known A1 suffix gap as documented behaviour).
+    20  live Docker tests (#[ignore]d, require Docker):
         8 layer2_dynamic (B1/C1/C2/C3/E1 + B4 wiper + B4 persistence + C1 ip-egress),
         4 layer3_dynamic (D1/D2/D3 + benign control),
-        2 full_pipeline (timebomb + benign), 1 full_registry (registry-name smoke).
+        2 full_pipeline (timebomb + benign), 1 full_registry (registry-name smoke),
+        5 eval_batch_docker (batch driver end-to-end, memoized-build coverage,
+          metrics.json round-trip, skipped-entry handling, one real DataDog sample).
 
 Dummy packages (gitignored; payload-free; never published):
 
@@ -366,14 +420,65 @@ Dummy packages (gitignored; payload-free; never published):
 
 
 -------------------------------------------------------------------------------
+ EVALUATION  (v17 — measured against packages the tool did not ship with)
+-------------------------------------------------------------------------------
+The dummy table above verifies that each layer WORKS. It cannot measure precision:
+every fixture was authored by this project. `--eval` closes that gap. Full corpus
+and safety notes in eval/README.md; results and a ranked fix list in eval/REPORT.md.
+
+    Arm  Corpus                                        n        Layers  Result
+    ---  --------------------------------------------  -------  ------  --------------------
+    A    OSV MAL-* names + parents (offline)           216,888  L0      flag rate 1.6%, FPR 7.4%
+    B    curated real names + parents (registry)            65  L0+L1   25.7% recall / 6.7% FPR *
+    C    the project's own dummy packages                   19  L0-L3   100% recall, 0% FPR
+    D    real malicious payloads, static (DataDog)         499  L1      88.8% recall
+    E    real malicious payloads, all layers                40  L1-L3   95.0% recall
+    F    legitimate packages through L2/L3                  27  L0-L3   first measured dynamic FPR
+
+    * mechanism-attributed. As shipped arm B reports 91.4% recall at 93.3% FPR, but
+      23 of its 32 "true positives" come solely from the `signatures` check firing on
+      npm's own takedown stub rather than from any name detection.
+
+  ⚠ WHAT THIS FOUND — read before citing a performance number.
+  The layers detect well; the scoring on top of them does not. On 27 legitimate popular
+  packages the shipped configuration accuses 26, with 12 hard BLOCKs (only chalk comes
+  through clean) — as shipped it
+  would refuse to install lodash, react, express, jquery, d3, ms and mysql. Two
+  single-check causes dominate:
+
+    1. signatures.rs is a time bomb. npm rotated its registry signing key and the old
+       one expired 2025-01-29; every package not republished since is BLOCK'd with
+       "no valid/unexpired signing key". This gets worse over time.
+    2. The static heuristics were tuned without a benign corpus. worm_signature —
+       the headline E1 differentiator — BLOCKs `fabric` and `node-sass` for containing
+       the string "npm publish" in a legitimate release script.
+
+  Also: ansi-styles@6.2.2 (the real Sept-2025 crypto clipper) passes all four layers,
+  because the v14 hex threshold (4 → 8 consecutive \xNN) does not see the
+  javascript-obfuscator family used in the real attacks — 5,662 `0x` literals and 314
+  `_0x` identifiers, but zero \xNN runs, eval, atob, Buffer.from or process.env.
+
+  On the positive side: Layer 1 alone catches 88.8% of 499 real malicious packages, and
+  E1 is validated against real malware — the single real-world IOC hash in
+  data/worm_iocs.txt matched the actual Shai-Hulud patient-zero sample
+  (@ctrl/tinycolor@4.1.1), with all three worm categories firing.
+
+  Fixing the above is the next build task. No detection logic was changed in v17.
+
+
+-------------------------------------------------------------------------------
  PROJECT LAYOUT
 -------------------------------------------------------------------------------
     src/
       main.rs              CLI, report formatting, --verbose, exit codes
       lib.rs               module declarations + public re-exports
-      docker.rs            shared docker_available() + SYS_PTRACE preflight probe
-      checker.rs           run_layer0() — orchestrates Layer 0 checks
-      registry.rs          npm registry + downloads API; signing keys
+      docker.rs            docker_available/docker_version, SYS_PTRACE preflight probe,
+                           ensure_layer_image() (one build per process, OnceLock-memoized),
+                           timeout_argv/run_docker (wall-clock cap + container cleanup)
+      checker.rs           run_layer0() — orchestrates Layer 0 checks;
+                           run_layer0_name_only() — name checks only, zero network
+      registry.rs          npm registry + downloads API; signing keys;
+                           FetchStatus/fetch_package_info (404 vs transient failure)
       typosquat.rs         levenshtein() + homoglyph fold + check_typosquat()
       age_check.rs         package age + download-spike detection
       maintainer.rs        first-vs-latest maintainer-set comparison
@@ -381,8 +486,17 @@ Dummy packages (gitignored; payload-free; never published):
       namespace.rs         unscoped-vs-scoped namespace-conflict detection
       combosquat.rs        popular-token + suspicious-affix heuristic (A4)
       runtime_lists.rs     additive runtime extension of embedded IOC/egress lists (env-file loader)
+      toplist.rs           --refresh-top: live top-package sweep + 24h cache + union merge
       models.rs            Verdict enum, Finding, CheckResult, scoring
-      report.rs            RiskReport, aggregate(), run_full_local/registry(), LayerStatus
+      report.rs            RiskReport, aggregate(), run_full_local/registry(), LayerStatus,
+                           FullScan/LayerMask + run_full_*_collect() (per-layer results +
+                           timings retained; version-pinned scanning)
+      eval/                evaluation harness (--eval); see eval/README.md
+        corpus.rs          ground-truth TSV manifest parsing (pure)
+        record.rs          EvalRecord/LayerRecord + JSONL and CSV writers (pure)
+        metrics.rs         confusion matrices, per-layer/vector rollups, timing (pure)
+        runner.rs          batch driver: scan each entry, stream results, flush per entry
+        samples.rs         DataDog sample fetch + encrypted-zip extraction (see SAFETY)
       layer1/
         mod.rs             run_layer1() / _local() / _extracted() / run_version_diff_local()
         tarball.rs         tarball URL resolution + download/extract (pub)
@@ -416,6 +530,7 @@ Dummy packages (gitignored; payload-free; never published):
       full_pipeline.rs     live:    --full local pipeline (#[ignore])
       full_registry.rs     live:    --full registry-name smoke (#[ignore])
       fixtures/            hand-crafted strace/dns log fixtures (layer2 + layer3)
+                           + recorded search-API page (toplist)
     dummy_packages/        per-vector test packages (gitignored; never published)
 
 
@@ -427,5 +542,8 @@ Dummy packages (gitignored; payload-free; never published):
     Zheng et al., "OSCAR", ASE 2024 — comparison target; basis for Layer 3 gap
     Duan et al., "MalOSS", NDSS 2021 — comparison target
     Huang et al., "DONAPI", USENIX Security 2024 — comparison target
-    OSSF malicious-packages (GitHub) — candidate evaluation dataset (evaluation TBD)
+    OSSF malicious-packages / OSV MAL-* feed — evaluation corpus for Layer 0 name
+      checks at scale (216,861 names; see eval/README.md)
+    DataDog/malicious-software-packages-dataset (Apache-2.0) — real malicious payloads
+      for Layers 1-3, since npm's takedown process defangs them (see eval/README.md)
     npm registry signatures: docs.npmjs.com/about-registry-signatures

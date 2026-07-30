@@ -13,7 +13,12 @@ pub fn load_top_scoped_packages() -> Vec<String> {
 
 /// Normalize a package name for namespace conflict comparison.
 /// `@aws-sdk/client-s3` → `aws-sdk-client-s3` (lowercased)
-fn normalize(pkg: &str) -> String {
+///
+/// `pub(crate)` (not private) so `toplist::split_and_filter_scoped` can reuse
+/// the exact same flattening rule when filtering fetched scoped names against
+/// the fetched unscoped set — two independent flattening implementations
+/// would risk drifting apart.
+pub(crate) fn normalize(pkg: &str) -> String {
     let stripped = if pkg.starts_with('@') {
         pkg.trim_start_matches('@')
     } else {

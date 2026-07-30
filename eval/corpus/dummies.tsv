@@ -1,0 +1,49 @@
+# npm-pre-scan evaluation corpus — LOCAL DUMMY PACKAGES
+#
+# Purpose : ground-truth fixtures authored by this project, one per in-scope
+#           attack vector. Consumed by `npm-pre-scan --eval` (src/eval/corpus.rs).
+# Source  : dummy_packages/ (GITIGNORED and untracked — this file is the only
+#           written record of which dirs must exist and what each one targets).
+#           Vector assignments derived from CLAUDE.md's "Dummy Packages —
+#           verification status" table and the assertions in tests/*.rs.
+# Format  : tab-separated. Lines starting with # are comments; blank lines skipped.
+#           kind  id  group  label  vectors  layers  note
+#           kind   ∈ name | version | dir | holder | sample
+#           group  ∈ real_malicious | dummy | parent_benign | datadog
+#           label  ∈ malicious | benign
+#           vectors: comma-separated A1..E1 / META, or - for none/unknown
+#           layers : comma-separated subset of 0,1,2,3, or - for none
+#           note   : optional free text, echoed into the record
+# Last updated: 2026-07-30
+#
+# NOTE on `dir` entries: Layer 0 is never applicable (a local directory has no
+# registry identity — matching run_full_local). A missing directory is recorded
+# as `skipped_missing` and excluded from every metric denominator, so this file
+# stays usable on a fresh clone where dummy_packages/ does not exist.
+
+# --- name-only fixtures (no directory; Layer 0 name checks only) -------------
+name	expres	dummy	malicious	A1	0	A1 typosquat of express; tests/layer0_dummy.rs
+name	aws-sdk-client-s3	dummy	malicious	A2	0	A2 namespace conflict with @aws-sdk/client-s3
+name	lodash-utils-fix	dummy	malicious	A4	0	A4 combosquat: popular token + suspicious affix
+
+# --- Layer 1 static fixtures -------------------------------------------------
+dir	dummy_packages/dummy_obfuscated	dummy	malicious	B2,B1	1	eval(Buffer.from(base64)) + postinstall
+dir	dummy_packages/dummy_malicious_update/latest	dummy	malicious	B3	1	B3 carrier; diffed against ../prev by run_version_diff_local
+dir	dummy_packages/dummy_malicious_update/prev	dummy	benign	-	1	B3 baseline control (benign predecessor)
+dir	dummy_packages/dummy_shai_hulud/infected	dummy	malicious	E1	1,2,3	E1 worm: static signature + live api.github.com egress
+dir	dummy_packages/dummy_shai_hulud/clean	dummy	benign	-	1,2,3	E1 precision control
+
+# --- Layer 2 dynamic fixtures ------------------------------------------------
+dir	dummy_packages/dummy_install_time	dummy	malicious	B1	1,2,3	postinstall spawns /usr/bin/id
+dir	dummy_packages/dummy_import_time	dummy	malicious	C1	1,2,3	import-time DNS lookup of example.com
+dir	dummy_packages/dummy_ip_egress	dummy	malicious	C1	1,2,3	net.connect to IP literal 1.2.3.4 (sinkhole bypass)
+dir	dummy_packages/dummy_slow_exfil	dummy	malicious	C2	1,2,3	35 encoded-label DNS queries (tunneling)
+dir	dummy_packages/dummy_binary	dummy	malicious	C3	1,2,3	opens build/addon.node at import
+dir	dummy_packages/dummy_wiper	dummy	malicious	B4	1,2,3	30 unlinks (mass_deletion)
+dir	dummy_packages/dummy_persistence	dummy	malicious	B4	1,2,3	appends to ~/.bashrc (sensitive_file_write)
+
+# --- Layer 3 condition-mutation fixtures ------------------------------------
+dir	dummy_packages/dummy_timebomb	dummy	malicious	D1	1,2,3	EXPIRES 2026-09-01 — after that it fires at baseline and D1 detection drops to 0
+dir	dummy_packages/dummy_env_triggered	dummy	malicious	D2	1,2,3	gated on USER=dev and no CI
+dir	dummy_packages/dummy_api_triggered	dummy	malicious	D3	1,2,3	dormant at require; fires when run() is invoked
+dir	dummy_packages/dummy_benign_l3	dummy	benign	-	1,2,3	primary precision control: pure add(a,b), no side effects

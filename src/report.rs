@@ -239,15 +239,196 @@ pub fn aggregate(package: &str, layers: [Option<&CheckResult>; 4]) -> RiskReport
     }
 }
 
+/// Which layers a caller wants run. `[bool; 4]`, indexed Layer 0..3.
+///
+/// Exists so a batch caller can request a subset (e.g. static layers only for a
+/// package whose dependencies the offline sandbox cannot install) without a
+/// separate entry point per combination. A layer that is masked off is reported
+/// as `LayerStatus::Skipped` via the existing `RiskReport::mark_skipped`, which
+/// is exactly the "intentionally not attempted" case that status was added for —
+/// distinct from `NotRun`, which means nobody said why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayerMask(pub [bool; 4]);
+
+impl LayerMask {
+    pub const ALL: LayerMask = LayerMask([true; 4]);
+
+    /// Build from a manifest's `layers` column (a list of layer indices).
+    pub fn from_indices(indices: &[u8]) -> Self {
+        let mut mask = [false; 4];
+        for &i in indices {
+            if let Some(slot) = mask.get_mut(i as usize) {
+                *slot = true;
+            }
+        }
+        LayerMask(mask)
+    }
+
+    pub fn wants(&self, layer: usize) -> bool {
+        self.0.get(layer).copied().unwrap_or(false)
+    }
+
+    /// Layers present in both masks — used to combine a per-entry request with a
+    /// run-wide ceiling.
+    pub fn intersect(&self, other: &LayerMask) -> LayerMask {
+        let mut out = [false; 4];
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = self.0[i] && other.0[i];
+        }
+        LayerMask(out)
+    }
+
+    pub fn indices(&self) -> Vec<u8> {
+        (0..4).filter(|&i| self.0[i]).map(|i| i as u8).collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.0.iter().any(|&b| b)
+    }
+}
+
+/// A full-pipeline scan that keeps everything, not just the aggregate.
+///
+/// `aggregate` is lossy by design — it discards each layer's `note` and flattens
+/// findings into `"{vector}: {check} ({message})"` strings. That is the right
+/// shape for a user-facing report and the wrong shape for measurement, where the
+/// severity, the vector tag, and the "not found on the registry" note all need
+/// to survive. So this carries the four `CheckResult`s alongside the report.
+///
+/// `CheckResult` is deliberately still not `Clone`: `aggregate` borrows the four
+/// results and returns an owned `RiskReport`, so the borrows end at that call and
+/// the results can simply be moved in afterwards.
+pub struct FullScan {
+    pub report: RiskReport,
+    /// Layer 0..3 results. `None` where the layer was not attempted.
+    pub layers: [Option<CheckResult>; 4],
+    /// Wall-clock milliseconds per layer, measured around each layer call.
+    pub layer_ms: [Option<u64>; 4],
+    /// Why the registry metadata fetch succeeded or failed, for registry-mode
+    /// scans. `None` for local scans, which never ask.
+    pub registry_status: Option<crate::registry::FetchStatus>,
+    /// Dependency count from the scanned `package.json`, when one was readable.
+    /// The offline sandbox cannot install dependencies, so a caller needs this to
+    /// know whether a Layer 2/3 result means anything.
+    pub declared_deps: Option<usize>,
+}
+
+/// Time one layer, or skip it if the mask says so.
+fn run_timed<F>(mask: LayerMask, layer: usize, f: F) -> (Option<CheckResult>, Option<u64>)
+where
+    F: FnOnce() -> CheckResult,
+{
+    if !mask.wants(layer) {
+        return (None, None);
+    }
+    let started = std::time::Instant::now();
+    let result = f();
+    (Some(result), Some(started.elapsed().as_millis() as u64))
+}
+
+/// Read the dependency count from a package directory's `package.json`.
+/// Best-effort: `None` when the file is absent or unreadable.
+fn read_declared_deps(dir: &Path) -> Option<usize> {
+    let text = std::fs::read_to_string(dir.join("package.json")).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    Some(
+        json.get("dependencies")
+            .and_then(|d| d.as_object())
+            .map(|o| o.len())
+            .unwrap_or(0),
+    )
+}
+
+/// Assemble a `FullScan` from already-computed layer results.
+///
+/// `requested` is what the caller asked for; `applicable` is what this scan path
+/// could ever run. A layer that is applicable but not requested was
+/// *intentionally declined*, which is `Skipped`. A layer that is not applicable
+/// at all stays `NotRun` — for a local directory scan, Layer 0 has no registry
+/// name to work with, so calling it "skipped" would imply a choice nobody made.
+/// `tests/full_pipeline.rs` asserts exactly this distinction.
+fn finish_scan(
+    name: &str,
+    requested: LayerMask,
+    applicable: LayerMask,
+    layers: [Option<CheckResult>; 4],
+    layer_ms: [Option<u64>; 4],
+    registry_status: Option<crate::registry::FetchStatus>,
+    declared_deps: Option<usize>,
+) -> FullScan {
+    let mut report = aggregate(
+        name,
+        [
+            layers[0].as_ref(),
+            layers[1].as_ref(),
+            layers[2].as_ref(),
+            layers[3].as_ref(),
+        ],
+    );
+    // A layer this path *could* have run but the caller masked off was
+    // intentionally not attempted, which is `Skipped`. One that was never
+    // applicable stays `NotRun`.
+    for (i, layer) in layers.iter().enumerate() {
+        if layer.is_none() && applicable.wants(i) && !requested.wants(i) {
+            report.mark_skipped(i);
+        }
+    }
+    FullScan {
+        report,
+        layers,
+        layer_ms,
+        registry_status,
+        declared_deps,
+    }
+}
+
+/// Run the local pipeline over a package directory, keeping per-layer detail.
+/// Layer 0 is never run — a local directory has no registry identity.
+pub fn run_full_local_collect(name: &str, dir: &Path, mask: LayerMask) -> FullScan {
+    // Layer 0 is not applicable to a local directory (no registry identity), so
+    // it is neither requested nor reported as a deliberate skip.
+    const APPLICABLE: LayerMask = LayerMask([false, true, true, true]);
+    let mask = mask.intersect(&APPLICABLE);
+
+    let (l1, t1) = run_timed(mask, 1, || crate::run_layer1_local(name, dir));
+    let (l2, t2) = run_timed(mask, 2, || crate::run_layer2_local(name, dir));
+    let (l3, t3) = run_timed(mask, 3, || crate::run_layer3_local(name, dir));
+
+    finish_scan(
+        name,
+        mask,
+        APPLICABLE,
+        [None, l1, l2, l3],
+        [None, t1, t2, t3],
+        None,
+        read_declared_deps(dir),
+    )
+}
+
 /// Run the full local pipeline (Layer 1 + Layer 2 + Layer 3) on a package
 /// directory and aggregate into one `RiskReport`. Layer 0 is skipped — a
 /// local directory has no registry identity (Layer 0 is name/metadata based).
 pub fn run_full_local(name: &str, dir: &Path) -> RiskReport {
-    let l1 = crate::run_layer1_local(name, dir);
-    let l2 = crate::run_layer2_local(name, dir);
-    let l3 = crate::run_layer3_local(name, dir);
+    run_full_local_collect(name, dir, LayerMask::ALL).report
+}
 
-    aggregate(name, [None, Some(&l1), Some(&l2), Some(&l3)])
+/// Run the full pipeline (Layer 0 + Layer 1 + Layer 2 + Layer 3) on an npm
+/// package fetched from the registry by name, and aggregate into one
+/// `RiskReport`, using the embedded Layer 0 comparison lists
+/// (`typosquat::load_top_packages()` / `namespace::load_top_scoped_packages()`).
+///
+/// Thin wrapper over `run_full_registry_with_lists` — preserves the API used
+/// by `tests/full_registry.rs` and the crate-root re-export for callers that
+/// don't care about `--refresh-top` (i.e. every caller except `main.rs`'s
+/// `--full <name>` branch, which computes the effective lists once via
+/// `toplist::load_effective_lists` and calls `run_full_registry_with_lists`
+/// directly, so a refreshed sweep isn't fetched twice).
+pub fn run_full_registry(name: &str) -> RiskReport {
+    run_full_registry_with_lists(
+        name,
+        &crate::typosquat::load_top_packages(),
+        &crate::namespace::load_top_scoped_packages(),
+    )
 }
 
 /// Run the full pipeline (Layer 0 + Layer 1 + Layer 2 + Layer 3) on an npm
@@ -259,71 +440,165 @@ pub fn run_full_local(name: &str, dir: &Path) -> RiskReport {
 /// `package/` dir for Layer 1 (static), Layer 2 (dynamic), and Layer 3
 /// (condition mutation) — avoiding a second download.
 ///
+/// `top_packages` / `top_scoped` are the Layer 0 comparison lists to use —
+/// passed in by the caller (rather than loaded internally) so `main.rs` can
+/// compute them once via `toplist::load_effective_lists(refresh)` and share
+/// them across the whole run instead of fetching/loading twice.
+///
 /// Failure handling (never panics):
 /// - Package not found on the registry → `Verdict::Error` report with a note.
 /// - Tarball URL missing from registry metadata, or download/extraction
 ///   fails → `Verdict::Error` report with a note. Layer 0's own result (which
 ///   did succeed) is still included, so a typosquat/namespace BLOCK from
 ///   Layer 0 is not lost just because the tarball couldn't be fetched.
-pub fn run_full_registry(name: &str) -> RiskReport {
-    let l0 = crate::run_layer0(
-        name,
-        &crate::typosquat::load_top_packages(),
-        &crate::namespace::load_top_scoped_packages(),
-    );
+pub fn run_full_registry_with_lists(name: &str, top_packages: &[String], top_scoped: &[String]) -> RiskReport {
+    run_full_registry_collect(name, None, top_packages, top_scoped, LayerMask::ALL).report
+}
 
-    let info = match crate::registry::get_package_info(name) {
+/// Run the registry pipeline, keeping per-layer detail, and optionally pinning a
+/// specific version instead of `dist-tags.latest`.
+///
+/// **Version pinning.** `version = Some(v)` resolves the tarball via
+/// `tarball::get_version_tarball_url` and passes `info: None` to
+/// `run_layer1_extracted`. Passing `None` is deliberate and does two necessary
+/// things: the `package.json` used for install-script detection comes from the
+/// *pinned tarball's own* content rather than from the latest release, and
+/// `check_version_diff` is skipped — which it must be, because it diffs the two
+/// *most recently published* versions, and for a historical pin (or a package npm
+/// has since replaced with a security stub) that comparison is meaningless.
+///
+/// Known limitation, recorded rather than papered over: Layer 0's registry checks
+/// (`age_check`, `maintainer`, `signatures`) all key off `dist-tags.latest`, so a
+/// pinned entry gets pinned *content* and latest-based *metadata*. Threading a
+/// version through those three modules is a larger change than this measurement
+/// needs, so the caller reports `l0_metadata_version` instead.
+///
+/// Failure handling matches `run_full_registry_with_lists` exactly: every failure
+/// path still yields a `FullScan` whose Layer 1 slot carries a `Verdict::Error`
+/// result with an explanatory note, so Layer 0's verdict is never lost just
+/// because the tarball could not be fetched.
+pub fn run_full_registry_collect(
+    name: &str,
+    version: Option<&str>,
+    top_packages: &[String],
+    top_scoped: &[String],
+    mask: LayerMask,
+) -> FullScan {
+    let (l0, t0) = run_timed(mask, 0, || crate::run_layer0(name, top_packages, top_scoped));
+
+    // Bail out with just Layer 0 when no content layer was requested — this also
+    // avoids a pointless metadata fetch and tarball download.
+    if !(mask.wants(1) || mask.wants(2) || mask.wants(3)) {
+        return finish_scan(
+            name,
+            mask,
+            LayerMask::ALL,
+            [l0, None, None, None],
+            [t0, None, None, None],
+            None,
+            None,
+        );
+    }
+
+    let err_scan = |l0: Option<CheckResult>,
+                    t0: Option<u64>,
+                    status: Option<crate::registry::FetchStatus>,
+                    note: String| {
+        let err = CheckResult {
+            package: name.to_string(),
+            verdict: Verdict::Error,
+            score: 0,
+            findings: vec![],
+            note: Some(note),
+        };
+        finish_scan(
+            name,
+            mask,
+            LayerMask::ALL,
+            [l0, Some(err), None, None],
+            [t0, None, None, None],
+            status,
+            None,
+        )
+    };
+
+    let (status, info) = crate::registry::fetch_package_info(name);
+    let info = match info {
         Some(info) => info,
         None => {
-            let err = CheckResult {
-                package: name.to_string(),
-                verdict: Verdict::Error,
-                score: 0,
-                findings: vec![],
-                note: Some(format!("Package '{}' not found on the npm registry", name)),
+            let note = match &status {
+                crate::registry::FetchStatus::NotFound => {
+                    format!("Package '{}' not found on the npm registry", name)
+                }
+                crate::registry::FetchStatus::Failed(reason) => format!(
+                    "Registry metadata fetch failed for '{}': {}",
+                    name, reason
+                ),
+                // `Found` with no document cannot happen, but assume nothing.
+                crate::registry::FetchStatus::Found => {
+                    format!("Registry returned no metadata for '{}'", name)
+                }
             };
-            return aggregate(name, [Some(&l0), Some(&err), None, None]);
+            return err_scan(l0, t0, Some(status), note);
         }
     };
 
-    let tarball_url = match crate::layer1::tarball::get_tarball_url(&info) {
+    let tarball_url = match version {
+        Some(v) => crate::layer1::tarball::get_version_tarball_url(&info, v),
+        None => crate::layer1::tarball::get_tarball_url(&info),
+    };
+    let tarball_url = match tarball_url {
         Some(url) => url,
         None => {
-            let err = CheckResult {
-                package: name.to_string(),
-                verdict: Verdict::Error,
-                score: 0,
-                findings: vec![],
-                note: Some("Could not determine tarball URL from registry metadata".to_string()),
+            let note = match version {
+                Some(v) => format!(
+                    "Version '{}' not present in registry metadata for '{}'",
+                    v, name
+                ),
+                None => "Could not determine tarball URL from registry metadata".to_string(),
             };
-            return aggregate(name, [Some(&l0), Some(&err), None, None]);
+            return err_scan(l0, t0, Some(status), note);
         }
     };
 
     let tmp = match crate::layer1::tarball::download_and_extract(&tarball_url) {
         Ok(t) => t,
         Err(e) => {
-            let err = CheckResult {
-                package: name.to_string(),
-                verdict: Verdict::Error,
-                score: 0,
-                findings: vec![],
-                note: Some(format!("Tarball download/extraction failed: {}", e)),
-            };
-            return aggregate(name, [Some(&l0), Some(&err), None, None]);
+            return err_scan(
+                l0,
+                t0,
+                Some(status),
+                format!("Tarball download/extraction failed: {}", e),
+            )
         }
     };
 
     // npm tarballs unpack under a `package/` subdir.
     let pkgdir = tmp.path().join("package");
 
-    let l1 = crate::layer1::run_layer1_extracted(name, &pkgdir, Some(&info));
-    let l2 = crate::run_layer2_local(name, &pkgdir);
-    let l3 = crate::run_layer3_local(name, &pkgdir);
+    // A pinned scan reads its metadata from the extracted tarball (see the doc
+    // comment above); an unpinned one reuses the registry document it already has.
+    let l1_info = if version.is_some() { None } else { Some(&info) };
+
+    let (l1, t1) = run_timed(mask, 1, || {
+        crate::layer1::run_layer1_extracted(name, &pkgdir, l1_info)
+    });
+    let (l2, t2) = run_timed(mask, 2, || crate::run_layer2_local(name, &pkgdir));
+    let (l3, t3) = run_timed(mask, 3, || crate::run_layer3_local(name, &pkgdir));
+
+    let declared_deps = read_declared_deps(&pkgdir);
 
     // `tmp` (the TempDir) is still in scope here and is dropped (cleaned up)
     // only after l1/l2/l3 have all finished reading from `pkgdir`.
-    aggregate(name, [Some(&l0), Some(&l1), Some(&l2), Some(&l3)])
+    finish_scan(
+        name,
+        mask,
+        LayerMask::ALL,
+        [l0, l1, l2, l3],
+        [t0, t1, t2, t3],
+        Some(status),
+        declared_deps,
+    )
 }
 
 #[cfg(test)]
@@ -575,5 +850,115 @@ mod tests {
             report.evidence.layer_3,
             vec!["dns:evil1.example.com".to_string(), "dns:evil2.example.com".to_string()]
         );
+    }
+}
+
+#[cfg(test)]
+mod layer_mask_tests {
+    use super::*;
+
+    #[test]
+    fn all_wants_every_layer() {
+        for i in 0..4 {
+            assert!(LayerMask::ALL.wants(i));
+        }
+        assert!(!LayerMask::ALL.is_empty());
+        assert_eq!(LayerMask::ALL.indices(), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn from_indices_round_trips_and_ignores_out_of_range() {
+        let m = LayerMask::from_indices(&[1, 3]);
+        assert_eq!(m.indices(), vec![1, 3]);
+        assert!(!m.wants(0));
+        assert!(m.wants(1));
+        assert!(!m.wants(2));
+        assert!(m.wants(3));
+        // A layer index the manifest parser would have rejected must not panic
+        // here either — this mask is built from data.
+        assert_eq!(LayerMask::from_indices(&[7]).indices(), Vec::<u8>::new());
+        assert!(LayerMask::from_indices(&[]).is_empty());
+    }
+
+    #[test]
+    fn intersect_is_the_ceiling_rule() {
+        // The manifest asks for 0..3; a name-only run ceiling permits only 0.
+        let requested = LayerMask::from_indices(&[0, 1, 2, 3]);
+        let ceiling = LayerMask::from_indices(&[0]);
+        assert_eq!(requested.intersect(&ceiling).indices(), vec![0]);
+        // A dir entry asking for 1..3 under a name-only ceiling has nothing left.
+        assert!(LayerMask::from_indices(&[1, 2, 3])
+            .intersect(&ceiling)
+            .is_empty());
+        // Intersection is commutative.
+        assert_eq!(
+            requested.intersect(&ceiling),
+            ceiling.intersect(&requested)
+        );
+    }
+
+    #[test]
+    fn a_masked_off_layer_is_reported_skipped_not_not_run() {
+        // `Skipped` means "intentionally not attempted"; `NotRun` means nobody
+        // said why. A caller-supplied mask is the former.
+        let l0 = CheckResult {
+            package: "p".into(),
+            verdict: Verdict::Pass,
+            score: 0,
+            findings: vec![],
+            note: None,
+        };
+        let scan = finish_scan(
+            "p",
+            LayerMask::from_indices(&[0]),
+            LayerMask::ALL,
+            [Some(l0), None, None, None],
+            [Some(1), None, None, None],
+            None,
+            None,
+        );
+        assert_eq!(scan.report.layer_status[0], LayerStatus::Ran);
+        for i in 1..4 {
+            assert_eq!(
+                scan.report.layer_status[i],
+                LayerStatus::Skipped,
+                "layer {} should be skipped",
+                i
+            );
+        }
+        assert_eq!(scan.layer_ms[0], Some(1));
+    }
+
+    #[test]
+    fn run_full_local_collect_never_runs_layer_zero_even_if_asked() {
+        // A local directory has no registry identity. Requesting layer 0 for one
+        // is a caller error that must not turn into a bogus Layer 0 result.
+        let mask = LayerMask::ALL;
+        let masked = mask.intersect(&LayerMask([false, true, true, true]));
+        assert!(!masked.wants(0));
+        assert_eq!(masked.indices(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn read_declared_deps_counts_dependencies_and_tolerates_absence() {
+        let dir = tempfile::tempdir().unwrap();
+        // No package.json at all.
+        assert_eq!(read_declared_deps(dir.path()), None);
+
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"p","dependencies":{"a":"1","b":"2"}}"#,
+        )
+        .unwrap();
+        assert_eq!(read_declared_deps(dir.path()), Some(2));
+
+        // A package with no `dependencies` key declares zero, which is the case
+        // that makes dynamic analysis meaningful in the offline sandbox.
+        std::fs::write(dir.path().join("package.json"), r#"{"name":"p"}"#).unwrap();
+        assert_eq!(read_declared_deps(dir.path()), Some(0));
+
+        // Malformed JSON must not panic.
+        std::fs::write(dir.path().join("package.json"), "{not json").unwrap();
+        assert_eq!(read_declared_deps(dir.path()), None);
     }
 }

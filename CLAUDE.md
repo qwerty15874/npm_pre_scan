@@ -1,5 +1,5 @@
 # CLAUDE.md
-> Last updated: 2026-07-12 (v15)
+> Last updated: 2026-07-12 (v16)
 
 ---
 
@@ -13,7 +13,16 @@ Layer 1  [████████████████████] DONE   S
 Layer 2  [████████████████████] DONE   Dynamic — baseline-subtraction diff, live Docker verified
 Layer 3  [████████████████████] DONE   Dynamic — condition mutation, live Docker verified
 Scoring  [████████████████████] DONE   Aggregate risk score (noisy-OR, --full pipeline)
+Eval     [████████████████████] DONE   --eval batch harness + 5-arm real-corpus experiment (v17)
+Precision[████░░░░░░░░░░░░░░░░] OPEN   v17 measured 93.3% FPR on legitimate packages — see below
 ```
+
+> ⚠ **v17 measurement result — read before citing any performance number.** The layers detect well
+> (100% on the dummy corpus, 88.8% Layer-1 recall on 499 real malicious packages), but on 27
+> *legitimate popular* packages the shipped configuration accuses 26 of them, 12 with a hard BLOCK.
+> Two single-check causes dominate: an expired-npm-signing-key time bomb in `signatures.rs`, and
+> static heuristics that were never tuned against a benign corpus. Fixing these is the next build
+> task; full analysis and a ranked fix list are in **`eval/REPORT.md`**.
 
 ---
 
@@ -89,6 +98,148 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 ---
 
 ## Change Log
+
+### v17: Evaluation harness + first real-corpus measurement (2026-07-30)
+Scope: user asked to select real malicious packages, dummy packages and parent packages, run them,
+**add a feature to output data based on the results**, then run an experiment to identify areas for
+improvement. Delivered `--eval` (batch scan → `records.jsonl`/`results.csv`/`findings.csv`/
+`metrics.json`), a six-manifest ground-truth corpus, and five experiment arms. **No detection logic
+was changed** — per the user's decision this pass identifies and documents weaknesses and stops.
+Offline **357 passed** (was 243); live Docker **20** (was 15). Full write-up in `eval/REPORT.md`.
+
+- **THE HEADLINE: the detection layers work; the scoring on top of them does not.** 100% recall / 0%
+  FPR on the project's own dummies, and Layer 1 alone gets **88.8% recall on 499 real malicious
+  packages**. But on 27 *legitimate popular* packages the tool accuses **26**, with **12 hard
+  BLOCKs** (only `chalk` came through clean) — as shipped it would refuse to install `d3`, `ms`,
+  `mysql`, `ffmpeg`, `http-proxy`, `node-sass`, `grunt-cli`, `babel-cli`, `escape-string-regexp`,
+  `fabric`, `shadowsocks` and `sqlite`, and would raise suspicion on `lodash`, `react`, `express`
+  and `jquery`.
+- **Cause 1 — a time bomb in `signatures.rs`.** npm rotated its registry signing key; the old key
+  (`SHA256:jl3bws…`) **expired 2025-01-29**. Packages not republished since are still signed with it,
+  `key_expired()` filters it out, no unexpired key matches, and the check returns **BLOCK "no
+  valid/unexpired signing key"**. Accounts for 11 of the 12 BLOCK-level FPs (the twelfth is
+  `fabric`, via `worm_signature`) and gets worse with time.
+  It also fabricates recall: **23 of arm B's 32 "true positives" were credited solely to this check
+  firing on npm's own security-holder stub**, not to any name detection. Mechanism-attributed, Layer
+  0's real name-check performance is **25.7% recall at 6.7% FPR**, not the 91.4%/93.3% the shipped
+  configuration reports.
+- **Cause 2 — static heuristics tuned with no benign corpus.** `suspicious_strings` (43 findings),
+  `obfuscation` (20), `dynamic_require` (8), `install_script` (5) fire on ordinary minified and
+  build-script-bearing packages. `worm_signature` — the headline E1 differentiator — **BLOCKs
+  `fabric` and `node-sass`** for containing the string `npm publish` in a legitimate release script.
+- **The v14 hex threshold opened a real recall hole.** `ansi-styles@6.2.2` (the Sept-2025
+  chalk/debug compromise, a crypto clipper) **passes all four layers**. Its 80 KB payload has 4
+  `\xNN` escapes where the rule needs 8 consecutive, and zero `eval`/`atob`/`Buffer.from`/`Function`/
+  `process.env`/network-`require` — but **5,662 `0x` literals and 314 distinct `_0x`-prefixed
+  identifiers** (the `javascript-obfuscator` family used in the real 2025 npm attacks). Layer 2/3 also
+  missed it: the clipper gates on `window.ethereum`, which never exists under `node -e require()`.
+  Recommended fix: a hex-identifier-density check; legitimate minifiers do not emit `_0x` names.
+- **E1 validated against real malware.** The single real-world IOC hash in `data/worm_iocs.txt`
+  **matched the actual Shai-Hulud patient-zero sample** (`@ctrl/tinycolor@4.1.1`) and all three worm
+  categories fired → BLOCK. Prediction "IOC coverage ≈ 0" refuted in the tool's favour.
+- **A1 misses split into two independent causes**, separable via the `closest`/`distance` fields:
+  **suffix blindness** (9/21 — `bare_name` strips only `@scope/`, so `jquery.js` is distance 3 from
+  `jquery`) and **absent parents** (12/21 — `ffmpeg`, `fabric`, `shadowsocks`, `tkinter` are not in
+  `data/top_packages.txt`). Also: 2 of the 9 A1 "hits" are accidental (`d3.js`→`dayjs` d=2,
+  `smb`→`pm2` d=2), so the mechanistically-correct count is 7/30.
+- **Layer 2's baseline subtraction is genuinely precise — first measurement on real software.** Arm F
+  put 27 legitimate packages through the dynamic layers (10 were dependency-free and therefore
+  analysable): **L2 false positives 0/10**. Previously this was evidenced only by `dummy_benign_l3`,
+  whose entire body is `add(a, b)`. L3 scored 1/10: `nodemailer` → D3 `trigger_on_use`, because the
+  fuzzer invoked an SMTP export and it opened a connection — D3 caused the behaviour it flagged. That
+  is structural, not a threshold: for any package whose purpose *is* network I/O, "an export touched
+  the network" carries no signal. Fix: require one of L2's stronger sub-signals (unrelated egress host,
+  IP literal, encoded DNS label, credential read) rather than a bare `import_side_effect`.
+- **Layers 2/3 earn their keep on the dummies but added nothing on real malware.** Sole detector for
+  **7 of 16** malicious dummies (D1/D2/D3 via L3 alone) — but on 40 real malicious samples, **L2 and L3
+  were sole detector 0 times** while L1 was 16 times, at 6 ms vs 34 s per package. The dummies were
+  built to require the dynamic layers; real npm malware mostly runs unconditionally at install or
+  import, where static analysis sees it plainly. State the L3 contribution as *coverage of a class
+  static analysis cannot reach in principle*, not as measured recall, until a condition-gated
+  real-malware corpus shows otherwise. Cost: p90 16.2 s (L2) / 31.1 s (L3); `dummy_slow_exfil` took
+  **467 s**, 24× the median. Also: only 10/27 legitimate and 28/40 malicious packages were
+  dynamically analysable at all — the `--offline` sandbox cannot install dependencies.
+- **Layer 1's 11% miss rate is mostly "nothing to analyse"**: 50% of missed samples carry <200 B of
+  JavaScript (15 carry none) vs 12% of detected ones — dependency-confusion name-claims where the
+  malice is in publishing to a name. A plausible "implausible version number (99.x/500.x)" heuristic
+  was **tested and rejected**: 7/56 misses vs 63/443 detections.
+- **New corpus facts (verified live 2026-07-30, do NOT re-litigate):** npm cannot supply real
+  malicious code — takedowns become 404s or *security holding* stubs, and the stubs that retain their
+  original version numbers were **republished defanged** (`crossenv@1.0.0`, `ffmepg@1.0.2`,
+  `jquery.js@1.0.2` all contain only `console.log('this package is no longer dangerous')`). Real
+  payloads come from `DataDog/malicious-software-packages-dataset` (Apache-2.0, ZipCrypto, password
+  `infected`). The authoritative name list is the OSV bulk export (**216,885** npm `MAL-*` names); the
+  GitHub tree API truncates well below the full set.
+- **Harness design decisions that keep the numbers honest**: `ARTIFACT_FN` for defanged stubs (kept
+  out of recall's denominator); `dyn_valid` gating on `declared_deps` because the `--network=none` +
+  `--offline` sandbox cannot install dependencies, so a dep-bearing package's empty profile is vacuous
+  rather than clean; INFO findings never count as positives (`check_typosquat` returns INFO on an
+  exact popular-list match, so every benign control would otherwise read as an FP); every rate is
+  `Option<f64>` so a zero denominator serializes to `null`, never `0.0`.
+- **Code (additive; the five edits to existing files are wrapper- or note-preserving):**
+  new `src/eval/{corpus,record,metrics,runner,samples}.rs`; `checker::run_layer0_name_only`
+  (name-only Layer 0, zero HTTP — the 216k sweep runs in **43.7 s** and is byte-reproducible);
+  `registry::{FetchStatus, fetch_package_info}` (404 vs transient failure, so a timeout can no longer
+  masquerade as "removed" and corrupt recall); `report::{FullScan, LayerMask,
+  run_full_{local,registry}_collect}` keeping the four `CheckResult`s + per-layer `Instant` timings
+  alongside the `RiskReport` (`CheckResult` still **not** `Clone` — borrow, aggregate, then move);
+  **version-pinned scanning** wiring the previously-unused `get_version_tarball_url`;
+  `docker::{docker_version, ensure_layer_image (OnceLock), timeout_argv, run_docker, container_name}`
+  — one probe+build per process instead of per layer (also collapses `--full` from 3 builds to 1) and
+  a `--docker-timeout` wall-clock cap that force-removes the container on exit 124. One new
+  dependency: `zip` (ZipCrypto, for the sample archives). CSV is hand-rolled — writer-only need, and
+  free text never enters a CSV.
+- **Two bugs found in the harness itself and fixed** (both would have looked like corpus gaps):
+  `merge_manifests` was O(n²) and hung on 216k entries; `find_package_root`'s `max_depth(8)` silently
+  skipped 38/499 macOS-collected samples nested under `/var/folders/…`.
+- **One regression caught by the existing suite**: masking Layer 0 off for a local-directory scan
+  initially reported it `Skipped`, but `tests/full_pipeline.rs` correctly requires `NotRun` — "not
+  applicable" is not "deliberately declined". `finish_scan` now takes both a *requested* and an
+  *applicable* mask.
+- **Known limitations of this measurement**: arm A's ground truth is "has a malicious-code advisory",
+  not "is a typosquat", so its 1.6% is a **flag rate**, not per-vector recall (that corpus is mostly
+  mass-registered spam outside A1/A2/A4's design). B3 shows 0% recall in arm C only because the
+  manifest cannot yet express a paired prev/latest directory. `dummy_persistence` is mis-attributed to
+  D2 (its `.bashrc` write is unconditional at import). Everything runs serially — concurrency would
+  perturb the very timings and behaviours being measured.
+
+### v16: Live top-package refresh (`--refresh-top`) — Layer 0 lists augmented from the npm search API (2026-07-12)
+Scope: user asked for "a feature to check top projects on NPM in real time"; clarified to **live-refresh
+of the Layer 0 comparison lists** (typosquat/namespace/combosquat corpus), NOT a scan-the-top-packages
+mode. Planning/docs Fable, coding Sonnet (reviewed + cargo-verified between), live-verified with real
+network. Offline **243 passed** (was 217); live Docker suite untouched (15, not re-run — no L2/L3 change).
+- **New `src/toplist.rs` + `--refresh-top` flag (also `NPM_PRE_SCAN_REFRESH_TOP=1|true`), default OFF**
+  (reproducibility + network-free `cargo test` by construction). `load_effective_lists(false)` is
+  byte-identical to the embedded loaders (regression-tested), zero fs/network.
+- **Verified npm search-API facts (2026-07-12 — do NOT re-litigate from folklore):** `text` param is
+  REQUIRED, 2–64 chars (`ERR_TEXT_LENGTH`); the community `text=boost-exact:false` match-all trick does
+  NOT work (treated as literal text); every result carries `downloads:{weekly,monthly}`; server-side
+  popularity ranking is relevance-dominated/noisy but popular packages float into page 1 of short-seed
+  queries (page 2+ empirically junk); `size` up to 250 works; **the API rate-limits with HTTP 429
+  (`retry-after: 0`) behind a ~10-request-burst token bucket — 150ms spacing died at seed #11, 1.2s
+  spacing measured 15/15 clean**.
+- **Fetch strategy:** ~24 two-letter seeds × one page of 250, 1.2s apart, ≤2 retries/seed (2s backoff);
+  harvest `(name, downloads.weekly)`, dedup (max wins), floor ≥500k weekly, sort desc, cap 1500;
+  sanity guard rejects a sweep with <200 floored names (API-drift protection). Live run harvested
+  371 unscoped + 112 scoped names in ~35s.
+- **Merge = UNION, embedded-first** (case-insensitive dedup keeps embedded casing/order — typosquat's
+  first-min-wins tie-break is order-dependent; a bad fetch can never shrink coverage). Scoped-FP
+  filter: fetched scoped names whose flattened form (`namespace::normalize`, now `pub(crate)`) exists
+  in the fetched unscoped set are dropped (`babel-core`/`@babel/core` legit-twin class).
+- **Cache:** `$NPM_PRE_SCAN_CACHE_DIR` > `$XDG_CACHE_HOME` > `~/.cache`, `npm-pre-scan/`, same
+  one-per-line `#`-comment format, 24h TTL by mtime, atomic `.tmp`+rename. Cache hit measured 0.088s
+  (vs ~35s sweep). Failure ladder: fresh cache → silent; fetch fail/rejected → stale cache, else
+  embedded, one stderr `note:` line — **never changes a verdict** (live-verified: `lodahs` BLOCK
+  identical in all paths).
+- **Plumbing:** `report.rs` split `run_full_registry` → `run_full_registry_with_lists` (+ thin
+  back-compat wrapper); `main.rs` computes lists once and passes down (no double fetch);
+  `registry.rs::fetch_search_page`. No new dependencies.
+- **Live-verified new coverage:** `abbrevv` → PASS with embedded lists, **BLOCK (typosquat of
+  live-fetched `abbrev`, distance=1)** with `--refresh-top`.
+- **Known limitations (documented):** seed-page coverage is fuzzy — giants like `lodash`/`react`
+  don't surface in seed page 1 and rely on the embedded snapshot (union makes this harmless; fetched
+  names are additive). Verdicts are non-reproducible when the flag is on (inherent; hence opt-in).
+  Residual namespace-FP class: legit flat twin absent from the fetched set still collides.
 
 ### v15: Environment migration (WSL Ubuntu → WSL Arch) + doc re-sync, re-verified on Arch (2026-07-12)
 Scope: user moved the dev box from WSL2/Ubuntu 26.04 to **WSL2/Arch Linux** and asked to read
@@ -368,11 +519,12 @@ src/
   signatures.rs   registry ECDSA-P256 signature verification (npm audit signatures)
   namespace.rs    unscoped name vs top_scoped_packages.txt (94 scoped pkgs)
   combosquat.rs   popular-token + suspicious-affix heuristic (A4)
+  toplist.rs      --refresh-top: live top-package sweep (npm search API) + 24h cache + union merge (v16)
   models.rs       Verdict enum, Finding type, CheckResult struct
-  main.rs         CLI: npm-pre-scan [--json] [--no-color] <pkg> [<pkg>...]
+  main.rs         CLI: npm-pre-scan [--json] [--no-color] [--refresh-top] <pkg> [<pkg>...]
 
-data/top_packages.txt        — embedded at compile time
-data/top_scoped_packages.txt — embedded at compile time
+data/top_packages.txt        — embedded at compile time (base; --refresh-top unions live names on top)
+data/top_scoped_packages.txt — embedded at compile time (base; --refresh-top unions live names on top)
 
 Binary:
   npm-pre-scan [--json] [--no-color] [-v|--verbose] <pkg> [<pkg>...]
@@ -384,6 +536,8 @@ Binary:
   exit 0=PASS  1=SUSPECT  2=BLOCK  3=ERROR
   (name scans also emit the aggregate RiskReport: L0+L1, layer_2/layer_3 not_run)
   (-v/--verbose: per-layer progress + per-scenario diff evidence)
+  (--refresh-top / NPM_PRE_SCAN_REFRESH_TOP=1: live-refresh the L0 top lists, 24h cache
+   at $NPM_PRE_SCAN_CACHE_DIR > $XDG_CACHE_HOME > ~/.cache; failure never changes a verdict)
 
 Severity rules:
   typosquat distance=1 (name ≥5 chars)               → BLOCK
@@ -612,11 +766,29 @@ Target schema (name scan with all layers populated):
 
 ---
 
-## Evaluation — TBD
-- Dummy-package verification stays (confirms each Layer works as intended).
-- Whether to add a real malicious-package benchmark (e.g., OSSF malicious-packages) is undecided.
-- Note: OSCAR reports F1 0.95 (npm) on a real benchmark — an independent tool may need performance metrics.
-- **Decision deferred.**
+## Evaluation — DONE (v17; harness built, five arms run, weaknesses documented)
+
+`npm-pre-scan --eval <manifest>` batch-scans a ground-truth corpus and emits `records.jsonl` (lossless
+per-package records), `results.csv` (45 cols), `findings.csv` (tidy, one row per finding),
+`metrics.json` (confusion matrices + per-group/layer/vector rollups + timing + provenance). Corpus and
+safety posture: `eval/README.md`. Results and ranked weaknesses: **`eval/REPORT.md`**.
+
+```
+Arm  Corpus                                                    n        Layers   Result
+A    OSV MAL-* names + legitimate parents (offline)             216,888  L0-name  flag rate 1.6%, FPR 7.4%
+B    curated real malicious names + parents (live registry)          65  L0+L1    25.7% recall / 6.7% FPR (mechanism-attributed)
+C    the project's own dummy packages                               19  L0-L3    100% recall, 0% FPR
+D    real malicious payloads, static (DataDog)                     499  L1       88.8% recall
+E    real malicious payloads, all layers (DataDog)                  40  L1-L3    95.0% recall, E1 4/4
+F    legitimate packages through the dynamic layers                 27  L0-L3    L2 FPR 0%, L3 FPR 10%
+```
+
+Comparison context: OSCAR reports F1 0.95 (npm) on a real benchmark. Arm D's Layer-1-only F1 is 0.94
+on 499 real malicious packages — but that arm has no benign control, and arm B shows the shipped
+verdict logic has a 93.3% FPR on legitimate packages, so **no headline F1 should be claimed until the
+`signatures` and static-heuristic problems in `eval/REPORT.md` are fixed.** The dummy-package
+verification stays as a per-vector functional check; it is not evidence of precision (arm C is 100%/0%
+and could not surface any of the real-corpus findings).
 
 ---
 

@@ -1,0 +1,128 @@
+{
+  "objects": [
+    {
+      "downloads": {
+        "monthly": 165514626,
+        "weekly": 33699572
+      },
+      "updated": "2026-07-12T05:21:01.217Z",
+      "searchScore": 2132.0962,
+      "package": {
+        "name": "co",
+        "version": "4.6.0",
+        "description": "generator async control flow goodness"
+      },
+      "score": {
+        "final": 2132.0962,
+        "detail": {
+          "popularity": 1,
+          "quality": 1,
+          "maintenance": 1
+        }
+      }
+    },
+    {
+      "downloads": {
+        "monthly": 8752727,
+        "weekly": 1926673
+      },
+      "updated": "2026-07-12T05:18:47.136Z",
+      "searchScore": 535.41254,
+      "package": {
+        "name": "co-body",
+        "version": "6.2.0",
+        "description": "request body parsing for co"
+      },
+      "score": {
+        "final": 535.41254,
+        "detail": {
+          "popularity": 1,
+          "quality": 1,
+          "maintenance": 1
+        }
+      }
+    },
+    {
+      "downloads": {
+        "monthly": 869581,
+        "weekly": 158220
+      },
+      "updated": "2026-07-12T05:19:27.817Z",
+      "searchScore": 468.27512,
+      "package": {
+        "name": "co-bluebird",
+        "version": "1.1.0",
+        "description": "co with bluebird promises"
+      },
+      "score": {
+        "final": 468.27512,
+        "detail": {
+          "popularity": 1,
+          "quality": 1,
+          "maintenance": 1
+        }
+      }
+    },
+    {
+      "downloads": {
+        "monthly": 2636781,
+        "weekly": 594603
+      },
+      "updated": "2026-07-12T05:21:30.228Z",
+      "searchScore": 461.4457,
+      "package": {
+        "name": "@types/co-body",
+        "version": "6.1.3",
+        "description": "TypeScript definitions for co-body"
+      },
+      "score": {
+        "final": 461.4457,
+        "detail": {
+          "popularity": 1,
+          "quality": 1,
+          "maintenance": 1
+        }
+      }
+    },
+    {
+      "updated": "2026-07-12T05:23:38.899Z",
+      "searchScore": 448.22833,
+      "package": {
+        "name": "co-prompt",
+        "version": "1.0.0",
+        "description": "simple terminal user input 'co'"
+      },
+      "score": {
+        "final": 448.22833,
+        "detail": {
+          "popularity": 1,
+          "quality": 1,
+          "maintenance": 1
+        }
+      }
+    },
+    {
+      "downloads": {
+        "monthly": 892274,
+        "weekly": 187666
+      },
+      "updated": "2026-07-12T05:23:16.038Z",
+      "searchScore": 430.87775,
+      "package": {
+        "name": "co-use",
+        "version": "1.1.0",
+        "description": "co using your choice of promise implementation"
+      },
+      "score": {
+        "final": 430.87775,
+        "detail": {
+          "popularity": 1,
+          "quality": 1,
+          "maintenance": 1
+        }
+      }
+    }
+  ],
+  "total": 13899,
+  "time": "2026-07-12T09:30:42.794Z"
+}

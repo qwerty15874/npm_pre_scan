@@ -1,0 +1,75 @@
+# npm-pre-scan evaluation corpus — REAL MALICIOUS PAYLOADS (curated, all layers)
+#
+# Purpose : hand-picked samples covering the published incidents this tool targets, plus small samples for breadth. Run through Layers 1+2+3.
+# Source  : DataDog/malicious-software-packages-dataset (Apache-2.0, human-vetted).
+#           Sample zips live at samples/npm/<id> in that repo and are ENCRYPTED
+#           with the password `infected`. `id` below is the repo-relative path
+#           under samples/npm/ — the package name and version are the two path
+#           components before the filename (scoped names are stored `@scope@name`
+#           in the directory but `@scope_name` in the filename, hence storing the
+#           full path rather than reconstructing it).
+#           Enumerated from the samples/npm git subtree on 2026-07-30
+#           (1443 compromised_lib + 22994 malicious_intent zips visible).
+# Format  : see eval/corpus/dummies.tsv header.
+#
+# ======================= SAFETY (this is live malware) =======================
+# These samples are ACTIVELY MALICIOUS code published by real threat actors.
+# The harness keeps the zips encrypted at rest under the gitignored
+# eval/samples/, extracts into a TempDir only for the duration of one scan, and
+# executes nothing on the host: Layers 2/3 run inside the existing container with
+# --network=none, a DNS sinkhole, a read-only /pkg mount, and a wall-clock cap
+# via --docker-timeout. Never `npm install` one of these outside the container.
+#
+# ====================== ON `vectors` AND DEPENDENCIES =======================
+# `vectors` is `-` except for incidents with a published, attributable vector.
+# The dataset carries no per-sample vector taxonomy, and inventing one would
+# fabricate ground truth. Entries with `-` contribute to the overall detection
+# rate and to the "which vector fired" breakdown, not to per-vector recall.
+#
+# `layers` is aspirational for Layers 2/3: the sandbox cannot fetch dependencies
+# (--network=none + --offline), so any sample declaring dependencies yields an
+# empty behaviour profile. The runner reads declared_deps from the extracted
+# package.json and marks such entries dyn_valid=false, excluding them from the
+# dynamic denominators rather than counting a vacuous PASS as precision.
+# =============================================================================
+
+sample	compromised_lib/@ctrl@tinycolor/4.1.1/2025-09-15-@ctrl_tinycolor-v4.1.1.zip	datadog	malicious	E1	1,2,3	@ctrl/tinycolor@4.1.1 (948823B) Shai-Hulud worm, Sept 2025 (patient zero)
+sample	compromised_lib/@ctrl@tinycolor/4.1.2/2025-09-15-@ctrl_tinycolor-v4.1.2.zip	datadog	malicious	E1	1,2,3	@ctrl/tinycolor@4.1.2 (949142B) Shai-Hulud worm, Sept 2025
+sample	compromised_lib/ngx-bootstrap/20.0.5/2025-09-15-ngx-bootstrap-v20.0.5.zip	datadog	malicious	E1	1,2,3	ngx-bootstrap@20.0.5 (2119915B) Shai-Hulud worm, Sept 2025
+sample	compromised_lib/ngx-bootstrap/20.0.6/2025-09-15-ngx-bootstrap-v20.0.6.zip	datadog	malicious	E1	1,2,3	ngx-bootstrap@20.0.6 (2116646B) Shai-Hulud worm, Sept 2025
+sample	compromised_lib/ansi-styles/6.2.2/2025-09-08-ansi-styles-v6.2.2.zip	datadog	malicious	B3	1,2,3	ansi-styles@6.2.2 (54257B) Sept 2025 chalk/debug maintainer phish; crypto clipper
+sample	compromised_lib/node-ipc/12.0.1/2026-05-14-node-ipc-v12.0.1.zip	datadog	malicious	B4	1,2,3	node-ipc@12.0.1 (98633B) protestware; destructive file overwrite
+sample	malicious_intent/perfetto-dev/1.0.0/2025-09-13-perfetto-dev-v1.0.0.zip	datadog	malicious	-	1,2,3	perfetto-dev@1.0.0 (2684B) malicious_intent sample
+sample	malicious_intent/productivity-suite-todo-lists-fragment/10.0.1/2025-09-19-productivity-suite-todo-lists-fragment-v10.0.1.zip	datadog	malicious	-	1,2,3	productivity-suite-todo-lists-fragment@10.0.1 (2992B) malicious_intent sample
+sample	malicious_intent/component-detection/7.3.2/2025-08-01-component-detection-v7.3.2.zip	datadog	malicious	-	1,2,3	component-detection@7.3.2 (2780B) malicious_intent sample
+sample	malicious_intent/libxmljs2qwerty/0.30.61/2025-12-09-libxmljs2qwerty-v0.30.61.zip	datadog	malicious	-	1,2,3	libxmljs2qwerty@0.30.61 (13092B) malicious_intent sample
+sample	malicious_intent/operation-server-sdk/6.5.8/2024-11-15-operation-server-sdk-v6.5.8.zip	datadog	malicious	-	1,2,3	operation-server-sdk@6.5.8 (3642B) malicious_intent sample
+sample	malicious_intent/blocks-nextjs/9999.9999.10027/2025-05-26-blocks-nextjs-v9999.9999.10027.zip	datadog	malicious	-	1,2,3	blocks-nextjs@9999.9999.10027 (10390B) malicious_intent sample
+sample	malicious_intent/com.revenuecat.purchases-unity/14.5.0/2025-09-09-com.revenuecat.purchases-unity-v14.5.0.zip	datadog	malicious	-	1,2,3	com.revenuecat.purchases-unity@14.5.0 (8297B) malicious_intent sample
+sample	malicious_intent/naniod/1.0.0/2026-02-17-naniod-v1.0.0.zip	datadog	malicious	-	1,2,3	naniod@1.0.0 (3257B) malicious_intent sample
+sample	malicious_intent/inhouse-root/10.6.9/2025-05-12-inhouse-root-v10.6.9.zip	datadog	malicious	-	1,2,3	inhouse-root@10.6.9 (3480B) malicious_intent sample
+sample	malicious_intent/rn-native-portals/6.5.8/2024-11-16-rn-native-portals-v6.5.8.zip	datadog	malicious	-	1,2,3	rn-native-portals@6.5.8 (3563B) malicious_intent sample
+sample	malicious_intent/discounts/0.8.16/2024-11-14-discounts-v0.8.16.zip	datadog	malicious	-	1,2,3	discounts@0.8.16 (2845B) malicious_intent sample
+sample	malicious_intent/node-calculator-7b82/2.4.0/2025-11-17-node-calculator-7b82-v2.4.0.zip	datadog	malicious	-	1,2,3	node-calculator-7b82@2.4.0 (3430B) malicious_intent sample
+sample	malicious_intent/@open-banking@cabinet-providers/999.9.5/2026-05-29-@open-banking_cabinet-providers-v999.9.5.zip	datadog	malicious	-	1,2,3	@open-banking/cabinet-providers@999.9.5 (3571B) malicious_intent sample
+sample	malicious_intent/foundry-toolkit/1.0.1/2026-02-26-foundry-toolkit-v1.0.1.zip	datadog	malicious	-	1,2,3	foundry-toolkit@1.0.1 (6383B) malicious_intent sample
+sample	malicious_intent/harper-web/1.0.0/2025-02-17-harper-web-v1.0.0.zip	datadog	malicious	-	1,2,3	harper-web@1.0.0 (2888B) malicious_intent sample
+sample	malicious_intent/label-merge-conflicts-action/9.9.9/2024-12-16-label-merge-conflicts-action-v9.9.9.zip	datadog	malicious	-	1,2,3	label-merge-conflicts-action@9.9.9 (2402B) malicious_intent sample
+sample	malicious_intent/mcp-server-everything/2.0.0/2025-09-09-mcp-server-everything-v2.0.0.zip	datadog	malicious	-	1,2,3	mcp-server-everything@2.0.0 (2376B) malicious_intent sample
+sample	malicious_intent/lambda-sns-dynatrace-sdk/3.4.1/2024-08-06-lambda-sns-dynatrace-sdk-v3.4.1.zip	datadog	malicious	-	1,2,3	lambda-sns-dynatrace-sdk@3.4.1 (16418B) malicious_intent sample
+sample	malicious_intent/stringmaster-pro/2.0.2/2025-09-02-stringmaster-pro-v2.0.2.zip	datadog	malicious	-	1,2,3	stringmaster-pro@2.0.2 (9838B) malicious_intent sample
+sample	malicious_intent/ui-forms-embed-components-reporting/1.13.0/2024-12-22-ui-forms-embed-components-reporting-v1.13.0.zip	datadog	malicious	-	1,2,3	ui-forms-embed-components-reporting@1.13.0 (4626B) malicious_intent sample
+sample	malicious_intent/dependent-controlling-attributes/1.0.0/2025-11-11-dependent-controlling-attributes-v1.0.0.zip	datadog	malicious	-	1,2,3	dependent-controlling-attributes@1.0.0 (9390B) malicious_intent sample
+sample	malicious_intent/react-vis-website/1.1.0/2024-12-16-react-vis-website-v1.1.0.zip	datadog	malicious	-	1,2,3	react-vis-website@1.1.0 (3232B) malicious_intent sample
+sample	malicious_intent/secguest-lib/1.0.1/2025-12-22-secguest-lib-v1.0.1.zip	datadog	malicious	-	1,2,3	secguest-lib@1.0.1 (3143B) malicious_intent sample
+sample	malicious_intent/aesdecryptor/1.0.0/2026-03-07-aesdecryptor-v1.0.0.zip	datadog	malicious	-	1,2,3	aesdecryptor@1.0.0 (18093B) malicious_intent sample
+sample	malicious_intent/archon4/1.1.0/2025-02-18-archon4-v1.1.0.zip	datadog	malicious	-	1,2,3	archon4@1.1.0 (3016B) malicious_intent sample
+sample	malicious_intent/atlaskit-registry/1.0.7/2025-05-11-atlaskit-registry-v1.0.7.zip	datadog	malicious	-	1,2,3	atlaskit-registry@1.0.7 (5706B) malicious_intent sample
+sample	malicious_intent/metrics-probe-64b2/1.0.0/2026-06-17-metrics-probe-64b2-v1.0.0.zip	datadog	malicious	-	1,2,3	metrics-probe-64b2@1.0.0 (8238B) malicious_intent sample
+sample	malicious_intent/realtime-from-scratch/1.0.0/2024-12-20-realtime-from-scratch-v1.0.0.zip	datadog	malicious	-	1,2,3	realtime-from-scratch@1.0.0 (3282B) malicious_intent sample
+sample	compromised_lib/@emilgroup@setting-sdk/0.2.2/2026-03-25-@emilgroup_setting-sdk-v0.2.2.zip	datadog	malicious	-	1,2,3	@emilgroup/setting-sdk@0.2.2 (8553B) compromised_lib sample
+sample	compromised_lib/babel-plugin-react-pure-component/0.1.6/2026-03-21-babel-plugin-react-pure-component-v0.1.6.zip	datadog	malicious	-	1,2,3	babel-plugin-react-pure-component@0.1.6 (8658B) compromised_lib sample
+sample	compromised_lib/react-autolink-text/2.0.1/2026-03-21-react-autolink-text-v2.0.1.zip	datadog	malicious	-	1,2,3	react-autolink-text@2.0.1 (9037B) compromised_lib sample
+sample	compromised_lib/cit-playwright-tests/1.0.1/2026-03-21-cit-playwright-tests-v1.0.1.zip	datadog	malicious	-	1,2,3	cit-playwright-tests@1.0.1 (9540B) compromised_lib sample
+sample	compromised_lib/@emilgroup@setting-sdk-node/0.2.2/2026-03-20-@emilgroup_setting-sdk-node-v0.2.2.zip	datadog	malicious	-	1,2,3	@emilgroup/setting-sdk-node@0.2.2 (9916B) compromised_lib sample
+sample	compromised_lib/@emilgroup@partner-portal-sdk/1.1.3/2026-03-20-@emilgroup_partner-portal-sdk-v1.1.3.zip	datadog	malicious	-	1,2,3	@emilgroup/partner-portal-sdk@1.1.3 (10248B) compromised_lib sample

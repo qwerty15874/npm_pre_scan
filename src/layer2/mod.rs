@@ -15,14 +15,13 @@
 pub mod classify;
 pub mod profile;
 
-use crate::docker::{check_ptrace_capability, docker_available, PtraceProbe};
+use crate::docker::docker_available;
 use crate::layer3::diff::{diff_profiles_phase, evidence_lines};
 use crate::models::{CheckResult, Finding, Verdict};
 use profile::Layer2Profile;
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::path::Path;
-use std::process::Command;
 
 fn error_result(package_name: &str, note: &str) -> CheckResult {
     CheckResult {
@@ -58,18 +57,6 @@ pub fn run_layer2_local(name: &str, dir: &Path) -> CheckResult {
         return error_result(name, "Docker required for Layer 2 — install Docker to enable dynamic analysis");
     }
 
-    // Best-effort preflight: a missing SYS_PTRACE capability makes strace
-    // silently produce empty logs inside the container (a known past failure
-    // mode — see CLAUDE.md v10), which downstream would misread as "clean".
-    // Only a confirmed *denial* stops the run here — surfacing it up front is
-    // more actionable than letting the run complete and yield a false-PASS
-    // from empty logs. An inconclusive probe (`Unknown`) does NOT block; it
-    // can false-negative (no network, image not cached) in ways the real run
-    // may not, so we proceed and let the real run be the source of truth.
-    if let PtraceProbe::Denied(note) = check_ptrace_capability() {
-        return error_result(name, &format!("Docker preflight failed: {}", note));
-    }
-
     let dockerfile_dir = match locate_docker_dir() {
         Some(d) => d,
         None => {
@@ -77,20 +64,14 @@ pub fn run_layer2_local(name: &str, dir: &Path) -> CheckResult {
         }
     };
 
-    // Build the Layer 2 Docker image
+    // Preflight (SYS_PTRACE probe) + image build, memoized once per process by
+    // `docker::ensure_layer_image`. A missing SYS_PTRACE capability makes strace
+    // silently produce empty logs inside the container (a known past failure
+    // mode — see CLAUDE.md v10), which downstream would misread as "clean", so
+    // only a confirmed *denial* stops the run; an inconclusive probe proceeds.
     let image_tag = "npm-pre-scan-layer2:latest";
-    let build_status = Command::new("docker")
-        .args(["build", "-t", image_tag, &dockerfile_dir])
-        .status();
-
-    match build_status {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            return error_result(name, &format!("Docker build failed (exit {})", s));
-        }
-        Err(e) => {
-            return error_result(name, &format!("Docker build error: {}", e));
-        }
+    if let Err(note) = crate::docker::ensure_layer_image(&dockerfile_dir, image_tag) {
+        return error_result(name, &note);
     }
 
     // Create a temp dir for output
@@ -105,33 +86,39 @@ pub fn run_layer2_local(name: &str, dir: &Path) -> CheckResult {
     };
 
     // Run the container: mount pkg read-only, out writable, no network
-    // (dnsmasq inside the container handles DNS — loopback only)
-    let run_status = Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "--network=none",
-            "--cap-add=SYS_PTRACE",
-            "-v",
-            &format!("{}:/pkg:ro", pkg_abs.display()),
-            "-v",
-            &format!("{}:/out:rw", out_dir.path().display()),
-            "-e",
-            "PKG_DIR=/pkg",
-            "-e",
-            "OUT_DIR=/out",
-            image_tag,
-        ])
-        .status();
+    // (dnsmasq inside the container handles DNS — loopback only).
+    //
+    // The container is named so that a wall-clock timeout (see
+    // `NPM_PRE_SCAN_DOCKER_TIMEOUT`) can force-remove it: signalling the attached
+    // `docker run` client does not reliably stop the container it started.
+    let container_name = crate::docker::container_name("l2");
+    let pkg_mount = format!("{}:/pkg:ro", pkg_abs.display());
+    let out_mount = format!("{}:/out:rw", out_dir.path().display());
+    let argv = [
+        "docker",
+        "run",
+        "--rm",
+        "--name",
+        &container_name,
+        "--network=none",
+        "--cap-add=SYS_PTRACE",
+        "-v",
+        &pkg_mount,
+        "-v",
+        &out_mount,
+        "-e",
+        "PKG_DIR=/pkg",
+        "-e",
+        "OUT_DIR=/out",
+        image_tag,
+    ];
 
-    match run_status {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            return error_result(name, &format!("Docker run failed (exit {})", s));
-        }
-        Err(e) => {
-            return error_result(name, &format!("Docker run error: {}", e));
-        }
+    if let Err(note) = crate::docker::run_docker(
+        &argv,
+        crate::docker::docker_timeout_from_env(),
+        Some(&container_name),
+    ) {
+        return error_result(name, &note);
     }
 
     // Read raw logs from /out. A missing/unreadable log is NOT the same as a

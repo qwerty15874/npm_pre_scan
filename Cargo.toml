@@ -23,6 +23,7 @@ walkdir = "2"
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 base64 = "0.22"
 sha2 = "0.10"
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2", "legacy-zip"] }
 
 [dev-dependencies]
 chrono = "0.4"
