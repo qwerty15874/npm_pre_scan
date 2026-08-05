@@ -54,23 +54,43 @@ fn rel(dir: &Path, path: &Path) -> String {
 
 /// Scan `dir` for worm-class supply-chain indicators.
 ///
-/// Three categories are checked per-file:
+/// Three categories are checked per-file, each **SUSPECT** on its own:
 ///   - self_propagation: npm publish, authToken reads, registry PUT
 ///   - credential_harvest: TruffleHog, cloud IMDS, cloud/git credential refs
 ///   - exfil_persistence: webhook.site, GitHub repo creation, workflow writes, shai-hulud literal
 ///
-/// An aggregate `worm` BLOCK finding is emitted when ≥2 distinct categories are present,
+/// An aggregate `worm` **BLOCK** finding is emitted when ≥2 distinct categories are present,
 /// indicating a Shai-Hulud-class self-replicating worm rather than a single-vector attack.
 ///
-/// Every scanned file is also SHA-256-hashed against the embedded IOC list (data/worm_iocs.txt).
+/// Every scanned file is also SHA-256-hashed against the embedded IOC list
+/// (data/worm_iocs.txt); an IOC match is **BLOCK** on its own, since it is a
+/// match against known malware rather than a heuristic.
+///
+/// ## Why one category is SUSPECT and not BLOCK (v18 — measured defect, fixed)
+///
+/// Until v18 each category pushed its own BLOCK, independently of the ≥2 rule
+/// above — so the aggregate never actually gated anything and the doc comment
+/// describing it was, in effect, false. A single ordinary maintainer script was
+/// enough to refuse a package.
+///
+/// v17 measured it on 27 legitimate popular packages: `fabric` BLOCK'd for
+/// `publish-next.js`, `node-sass` for `scripts/util/rejectUnauthorized.js`,
+/// `scripts/util/proxy.js` and `lib/extensions.js`. All four are release/build
+/// tooling, all match only `self_propagation`, and `fabric` passes Layers 2 and 3
+/// cleanly — nothing anywhere in the pipeline corroborated the accusation.
+///
+/// Self-propagation alone is a capability, not an attack: publishing to npm is
+/// what a release script is *for*. It takes a second category — stealing
+/// credentials, or exfiltrating them — to make it worm-shaped. Known-IOC hits
+/// keep BLOCK because they are identity, not inference.
 pub fn check_worm_signature(dir: &Path) -> Vec<Finding> {
     // ---- compile regexes once ----
-    // Self-propagation patterns (BLOCK)
+    // Self-propagation patterns (SUSPECT alone; BLOCK only via the ≥2-category aggregate)
     let re_npm_publish = Regex::new(r"npm\s+publish\b").unwrap();
     let re_auth_token = Regex::new(r"_authToken|NPM_TOKEN|\.npmrc").unwrap();
     let re_registry_put = Regex::new(r"registry\.npmjs\.org.*PUT|PUT.*registry\.npmjs\.org").unwrap();
 
-    // Credential harvest patterns (BLOCK)
+    // Credential harvest patterns (SUSPECT alone; BLOCK only via the ≥2-category aggregate)
     let re_trufflehog = Regex::new(r"trufflehog").unwrap();
     let re_imds = Regex::new(r"169\.254\.169\.254").unwrap();
     let re_cloud_creds = Regex::new(
@@ -78,7 +98,7 @@ pub fn check_worm_signature(dir: &Path) -> Vec<Finding> {
     )
     .unwrap();
 
-    // Exfil + persistence patterns (BLOCK)
+    // Exfil + persistence patterns (SUSPECT alone; BLOCK only via the ≥2-category aggregate)
     let re_webhook = Regex::new(r"webhook\.site").unwrap();
     let re_gh_repo_create = Regex::new(
         r"api\.github\.com.*/user/repos|repos\.create\b|createForAuthenticatedUser",
@@ -101,6 +121,7 @@ pub fn check_worm_signature(dir: &Path) -> Vec<Finding> {
         let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
         if iocs.contains(&hash) {
             findings.push(finding(
+                // BLOCK on its own: a known-IOC hash is identity, not inference.
                 "BLOCK",
                 &format!("Known-IOC SHA-256 match: {} ({})", hash, file),
                 &file,
@@ -115,7 +136,7 @@ pub fn check_worm_signature(dir: &Path) -> Vec<Finding> {
             || re_registry_put.is_match(&content)
         {
             findings.push(finding(
-                "BLOCK",
+                "SUSPECT",
                 &format!(
                     "Self-propagation indicator in {} (npm publish / authToken / registry PUT)",
                     file
@@ -132,7 +153,7 @@ pub fn check_worm_signature(dir: &Path) -> Vec<Finding> {
             || re_cloud_creds.is_match(&content)
         {
             findings.push(finding(
-                "BLOCK",
+                "SUSPECT",
                 &format!(
                     "Credential-harvest indicator in {} (TruffleHog / IMDS / cloud credentials)",
                     file
@@ -150,7 +171,7 @@ pub fn check_worm_signature(dir: &Path) -> Vec<Finding> {
             || re_shai_hulud.is_match(&content)
         {
             findings.push(finding(
-                "BLOCK",
+                "SUSPECT",
                 &format!(
                     "Exfil/persistence indicator in {} (webhook.site / GitHub repo create / workflow write / shai-hulud)",
                     file
@@ -276,5 +297,111 @@ mod tests {
         let d = dir_with(&[("index.js", "module.exports = function add(a,b){return a+b;};")]);
         let f = check_worm_signature(d.path());
         assert!(f.is_empty(), "clean file should produce no findings; got: {:?}", f);
+    }
+
+    // ── v18 severity pinning ───────────────────────────────────────────────────
+    // These lock in the fix for the measured FP: a lone category must not BLOCK.
+
+    fn severities(f: &[Finding]) -> Vec<&str> {
+        f.iter()
+            .filter_map(|x| x.get("severity").and_then(|v| v.as_str()))
+            .collect()
+    }
+
+    /// A release script that publishes to npm is one category and must be SUSPECT.
+    /// This is the `fabric` / `node-sass` false positive: real, verified against
+    /// both packages — `fabric` matches once (`publish-next.js`), `node-sass`
+    /// three times, all `self_propagation`.
+    #[test]
+    fn single_category_is_suspect_not_block() {
+        let d = dir_with(&[("publish-next.js", "exec('npm publish --access public');")]);
+        let f = check_worm_signature(d.path());
+        assert_eq!(
+            severities(&f),
+            vec!["SUSPECT"],
+            "publishing to npm is what a release script is FOR — one category is a \
+             capability, not a worm; got: {f:?}"
+        );
+    }
+
+    /// Repeated hits of the SAME category across several files stay SUSPECT —
+    /// `node-sass`'s exact shape (3 files, all self_propagation). Breadth within
+    /// one category is not the same as two categories.
+    #[test]
+    fn repeated_single_category_across_files_stays_suspect() {
+        let d = dir_with(&[
+            ("scripts/util/rejectUnauthorized.js", "// reads .npmrc"),
+            ("scripts/util/proxy.js", "// reads .npmrc"),
+            ("lib/extensions.js", "// reads .npmrc"),
+        ]);
+        let f = check_worm_signature(d.path());
+        assert_eq!(f.len(), 3, "expected one finding per file; got: {f:?}");
+        assert!(
+            severities(&f).iter().all(|s| *s == "SUSPECT"),
+            "got: {f:?}"
+        );
+        assert!(!cats(&f).contains(&"worm"), "got: {f:?}");
+    }
+
+    /// EACH functional category, alone, must be SUSPECT — asserted per category
+    /// rather than once, because a bulk edit demoting "the categories" can easily
+    /// miss one or catch the IOC branch by mistake. (It did, during v18.)
+    #[test]
+    fn every_functional_category_alone_is_suspect() {
+        for (name, body) in [
+            ("self_propagation", "exec('npm publish --access public');"),
+            ("credential_harvest", "const u = 'http://169.254.169.254/latest';"),
+            ("exfil_persistence", "fetch('https://webhook.site/abc');"),
+        ] {
+            let d = dir_with(&[("a.js", body)]);
+            let f = check_worm_signature(d.path());
+            assert_eq!(
+                severities(&f),
+                vec!["SUSPECT"],
+                "{name} alone must be SUSPECT, not BLOCK; got: {f:?}"
+            );
+            assert!(!cats(&f).contains(&"worm"), "{name}: got {f:?}");
+        }
+    }
+
+    /// Two categories together are worm-shaped: the aggregate BLOCKs. Checked for
+    /// every pair, so the BLOCK cannot come from one privileged category.
+    #[test]
+    fn two_categories_still_block_via_aggregate() {
+        let bodies = [
+            ("self_propagation", "exec('npm publish --access public');"),
+            ("credential_harvest", "const u = 'http://169.254.169.254/latest';"),
+            ("exfil_persistence", "fetch('https://webhook.site/abc');"),
+        ];
+        for (i, (na, a)) in bodies.iter().enumerate() {
+            for (nb, b) in bodies.iter().skip(i + 1) {
+                let d = dir_with(&[("bundle.js", &format!("{a}\n{b}"))]);
+                let f = check_worm_signature(d.path());
+                assert!(
+                    severities(&f).contains(&"BLOCK"),
+                    "{na} + {nb} must BLOCK via the aggregate; got: {f:?}"
+                );
+                assert!(cats(&f).contains(&"worm"), "{na} + {nb}: got {f:?}");
+            }
+        }
+    }
+
+    /// A known-IOC hash is identity, not inference — it BLOCKs on its own.
+    #[test]
+    fn ioc_hash_alone_still_blocks() {
+        // Content whose SHA-256 is in data/worm_iocs.txt would be needed for a
+        // true end-to-end check; tests/layer1_worm.rs::e1_shai_hulud_static_blocks
+        // covers that against the real fixture. Here we assert the severity the
+        // IOC branch is written with, so a future demotion sweep cannot catch it.
+        let src = include_str!("worm_signature.rs");
+        let ioc_branch = src
+            .split(r#""ioc_hash","#)
+            .next()
+            .expect("ioc_hash push not found");
+        let tail = &ioc_branch[ioc_branch.len().saturating_sub(400)..];
+        assert!(
+            tail.contains(r#""BLOCK""#),
+            "the ioc_hash finding must stay BLOCK; tail was:\n{tail}"
+        );
     }
 }

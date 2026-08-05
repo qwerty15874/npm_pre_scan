@@ -1,0 +1,369 @@
+{
+  "provenance": {
+    "tool_version": "0.1.0",
+    "started_at": "2026-07-30T05:40:03.812209551+00:00",
+    "finished_at": "2026-07-30T05:43:11.192485663+00:00",
+    "eval_mode": "name-only",
+    "manifests": [
+      "eval/corpus/ossf_npm_names.tsv",
+      "eval/corpus/parent_benign.tsv"
+    ],
+    "entry_count": 216888,
+    "docker_version": null,
+    "ptrace_probe": "not_probed",
+    "docker_timeout_secs": null,
+    "top_list_refreshed": false,
+    "top_packages_len": 1137,
+    "top_scoped_len": 94,
+    "host_os": "linux"
+  },
+  "record_count": 216888,
+  "outcomes": {
+    "scanned": 216888,
+    "skipped_missing": 0,
+    "registry_not_found": 0,
+    "registry_failed": 0,
+    "timeout": 0
+  },
+  "overall": {
+    "true_positive": 3451,
+    "false_positive": 2,
+    "true_negative": 25,
+    "false_negative": 213410,
+    "artifact_fn": 0,
+    "error": 0,
+    "skipped": 0
+  },
+  "overall_rates": {
+    "scored": 216888,
+    "recall": 0.015913419194783757,
+    "precision": 0.9994207935128874,
+    "fpr": 0.07407407407407407,
+    "f1": 0.03132801365324037,
+    "accuracy": 0.01602670502747962
+  },
+  "overall_block_only": {
+    "true_positive": 421,
+    "false_positive": 2,
+    "true_negative": 25,
+    "false_negative": 216440,
+    "artifact_fn": 0,
+    "error": 0,
+    "skipped": 0
+  },
+  "overall_block_only_rates": {
+    "scored": 216888,
+    "recall": 0.0019413356942926574,
+    "precision": 0.9952718676122931,
+    "fpr": 0.07407407407407407,
+    "f1": 0.0038751127556561917,
+    "accuracy": 0.0020563608867249458
+  },
+  "by_group": [
+    {
+      "group": "real_malicious",
+      "confusion": {
+        "true_positive": 3451,
+        "false_positive": 0,
+        "true_negative": 0,
+        "false_negative": 213410,
+        "artifact_fn": 0,
+        "error": 0,
+        "skipped": 0
+      },
+      "rates": {
+        "scored": 216861,
+        "recall": 0.015913419194783757,
+        "precision": 1.0,
+        "fpr": null,
+        "f1": 0.03132829805003813,
+        "accuracy": 0.015913419194783757
+      }
+    },
+    {
+      "group": "parent_benign",
+      "confusion": {
+        "true_positive": 0,
+        "false_positive": 2,
+        "true_negative": 25,
+        "false_negative": 0,
+        "artifact_fn": 0,
+        "error": 0,
+        "skipped": 0
+      },
+      "rates": {
+        "scored": 27,
+        "recall": null,
+        "precision": 0.0,
+        "fpr": 0.07407407407407407,
+        "f1": null,
+        "accuracy": 0.9259259259259259
+      }
+    }
+  ],
+  "by_layer": [
+    {
+      "layer": 0,
+      "ran": 216888,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 0,
+      "block": 423,
+      "suspect": 3030,
+      "pass": 213435,
+      "finding_count": 3862,
+      "sole_detector": 3451,
+      "false_hits": 2,
+      "ms_p50": 0,
+      "ms_p90": 1,
+      "ms_max": 32,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 1,
+      "ran": 0,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 216888,
+      "block": 0,
+      "suspect": 0,
+      "pass": 0,
+      "finding_count": 0,
+      "sole_detector": 0,
+      "false_hits": 0,
+      "ms_p50": 0,
+      "ms_p90": 0,
+      "ms_max": 0,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 2,
+      "ran": 0,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 216888,
+      "block": 0,
+      "suspect": 0,
+      "pass": 0,
+      "finding_count": 0,
+      "sole_detector": 0,
+      "false_hits": 0,
+      "ms_p50": 0,
+      "ms_p90": 0,
+      "ms_max": 0,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 3,
+      "ran": 0,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 216888,
+      "block": 0,
+      "suspect": 0,
+      "pass": 0,
+      "finding_count": 0,
+      "sole_detector": 0,
+      "false_hits": 0,
+      "ms_p50": 0,
+      "ms_p90": 0,
+      "ms_max": 0,
+      "excluded_not_dyn_valid": 0
+    }
+  ],
+  "by_vector": [
+    {
+      "vector": "A1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 1,
+      "total_fires": 3042
+    },
+    {
+      "vector": "A2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 1,
+      "total_fires": 2
+    },
+    {
+      "vector": "A3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "A4",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 409
+    },
+    {
+      "vector": "META",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "B1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "B2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "B3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "B4",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "C1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "C2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "C3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "E1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    }
+  ],
+  "timing": {
+    "total_ms": 43657,
+    "p50": 0,
+    "p90": 1,
+    "p99": 1,
+    "max": 32,
+    "slowest": [
+      [
+        "given_camel_z3n",
+        32
+      ],
+      [
+        "glaciology-kinetic-paleoclimatology-helmet",
+        32
+      ],
+      [
+        "github-issue-mirror",
+        26
+      ],
+      [
+        "github-runner-lambda-syncer",
+        25
+      ],
+      [
+        "given_eagle_requirement",
+        25
+      ],
+      [
+        "glaciology-mira-blackhole-greatfilter",
+        22
+      ],
+      [
+        "glacier-coral-yun199-project",
+        17
+      ],
+      [
+        "github-helpscout-collector",
+        16
+      ],
+      [
+        "glacier-horizon-ahd256-project",
+        15
+      ],
+      [
+        "githubinfo",
+        14
+      ]
+    ]
+  }
+}

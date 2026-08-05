@@ -7,9 +7,25 @@ verification used a dummy package authored by this project, which confirms each 
 designed* but cannot produce a recall figure, a false-positive rate, or an answer to "which layer
 earns its keep."
 
-Raw data for every claim below is in `eval/runs/arm{A..F}/` — `records.jsonl` (one lossless record
-per package), `results.csv`, `findings.csv`, `metrics.json`. Reproduce with the commands in each
-arm's section.
+Raw data for **most** claims below is in `eval/runs/arm{A..F}/` — `records.jsonl` (one lossless
+record per package), `results.csv`, `findings.csv`, `metrics.json`. Reproduce with the commands in
+each arm's section. A committed snapshot of the six `metrics.json` files is tracked at
+`eval/baseline/v17/arm{A..F}.metrics.json` (`eval/runs/` itself is gitignored).
+
+**Where to find per-finding file paths.** `findings.csv` is a flat summary and has no `file`
+column, and its `evidence_count` refers only to Layer 2/3 **diff evidence** — so every row of
+`armF/findings.csv` reads `evidence_count = 0` for Layer 0/1 findings whether or not the run used
+`--eval-evidence`. The file path a Layer 1 finding fired on is carried by the `file` field of the
+finding itself, inside `records.jsonl`, which is lossless. The four `worm_signature` paths cited in
+§2 below are all present in `eval/runs/armF/records.jsonl`, and were re-derived independently by
+scanning the published tarballs.
+
+> Corrects an earlier note here which claimed those paths were unrecoverable and could be restored
+> by re-running with `--eval-evidence`. Both halves were wrong: they were always in
+> `records.jsonl`, and `--eval-evidence` would not have helped, because Layer 1 findings have no
+> `evidence` field at all — `RiskReport.evidence` holds Layer 2/3 diff events only. A v18 re-run
+> with the flag produced evidence on exactly one finding of 128 (`nodemailer`'s D3
+> `trigger_on_use`, 15 lines), which is the expected result.
 
 ---
 
@@ -17,9 +33,9 @@ arm's section.
 
 **The detection layers work. The scoring on top of them does not.**
 
-On its own dummy corpus the tool is perfect (16/16 vectors, 0 false positives). On 499 real
-malicious packages Layer 1 alone reaches **88.8% recall**, and on 40 real payloads through all
-layers, **95.0%**.
+On its own dummy corpus the tool catches **16/16 packages — but 15/16 vectors** — with 0 false
+positives, and only 9 of the 16 reach BLOCK. On 499 real malicious packages Layer 1 alone reaches
+**88.8% recall**, and on 40 real payloads through all layers, **95.0%**.
 
 But run it over 27 *legitimate, popular* packages and it accuses **26 of them** — **12 with a hard
 `BLOCK`**. Only `chalk` comes through clean. As shipped, the tool would refuse to install `d3`,
@@ -56,7 +72,7 @@ Two results run the other way and are worth stating as plainly as the problems:
 | Arm | Corpus | n | Layers | Cost |
 |---|---|---|---|---|
 | A | Every npm name with a malicious-code advisory (OSV `MAL-*`) + legitimate parents | 216,888 | L0 name checks, offline | 43.7 s |
-| B | Curated real malicious names + legitimate parents, via the live registry | 65 | L0 + L1 | 25.6 s |
+| B | Curated real malicious names + legitimate parents, via the live registry | 65 | L0 (malicious) / L0+L1 (benign) | 25.6 s |
 | C | The project's own dummy packages | 19 | L0/L1 + L2 + L3 | 13.2 min |
 | D | Real malicious payloads (DataDog dataset), static | 499 | L1 | 5.2 s |
 | E | Real malicious payloads, all layers | 40 | L1 + L2 + L3 | 23.0 min |
@@ -122,8 +138,17 @@ npm-pre-scan --eval eval/corpus/real_malicious_holders.tsv --eval eval/corpus/pa
              --eval-mode registry --out-dir eval/runs/armB
 ```
 
+**This arm ran Layer 1 on the benign parents ONLY.** `metrics.json` → `by_layer[1]: ran 27,
+skipped 38`: the 27 are the parents, and **all 38 malicious holder entries were Layer 0 only**. So
+the arm is `L0 (malicious) / L0+L1 (benign)`, and everything below about its recall is a **Layer 0
+figure** — consistent with `by_layer[0].sole_detector = 32`, and one more reason the number is a
+`signatures` artefact rather than detection.
+
 As shipped, this arm reports recall 91.4% and **FPR 93.3%**. Both numbers are misleading, and the
-reason is the same check.
+reason is the same check. Note the FPR denominator is **30**, not 27: `real_malicious_holders.tsv`
+labels three reclaimed names (`mariadb`, `opencv.js`, `openssl.js`) `benign`, and two of them
+(`opencv.js`, `openssl.js`) are BLOCK'd via META. The project's headline FPR is arm F's 96.3%
+(26/27), which is the full pipeline over a benign-only corpus.
 
 Restricting which checks are allowed to accuse separates the mechanisms (35 malicious, 30 benign):
 
@@ -143,19 +168,75 @@ other is not carrying the discrimination its `BLOCK` severity implies.
 
 ### What fires on legitimate packages (n=27 parents)
 
-| Layer | Check | Severity | Packages hit |
-|---|---|---|---|
-| L0 | `signatures` | **BLOCK** | **11** |
-| L1 | `suspicious_strings` | SUSPECT | 43 findings across 13 |
-| L1 | `obfuscation` | SUSPECT | 20 findings across 6 |
-| L1 | `dynamic_require` | SUSPECT | 8 |
-| L1 | `install_script` | SUSPECT | 5 |
-| L1 | `worm_signature` | **BLOCK** | **4 findings across 2** |
-| L0 | `maintainer` | SUSPECT | 4 |
-| L1 | `network_imports` | SUSPECT | 4 |
-| L0 | `typosquat` / `namespace` | **BLOCK** | 1 each |
+**Package counts, not finding counts, are the decision-relevant figure** — a calibration change has
+to move the number of packages it touches. Both are given below. (Arm B and arm F produce an
+identical benign finding set apart from arm F's one extra `trigger_on_use`, so this table doubles
+as the arm F breakdown.)
+
+| Layer | Check | Severity | Findings | Packages hit |
+|---|---|---|---|---|
+| L0 | `signatures` | **BLOCK** | 11 | **11** |
+| L1 | `suspicious_strings` | SUSPECT | 43 | **12** |
+| L1 | `obfuscation` | SUSPECT | 20 | **5** |
+| L1 | `dynamic_require` | SUSPECT | 8 | 4 |
+| L1 | `install_script` | SUSPECT | 5 | 5 |
+| L1 | `worm_signature` | **BLOCK** | 4 | **2** — `fabric` 1, `node-sass` 3 |
+| L0 | `maintainer` | SUSPECT | 4 | 4 |
+| L1 | `network_imports` | SUSPECT | 4 | 4 |
+| L0 | `typosquat` / `namespace` | **BLOCK** | 1 each | 1 each |
+| L1 | `shell_exfil` | SUSPECT | 1 | 1 — `shadowsocks` |
+| L1 | `version_diff` | SUSPECT | 1 | 1 — `bcrypt` |
+| L3 | `trigger_on_use` | SUSPECT | 1 | 1 — `nodemailer` (arm F only) |
+
+The last three appear in no earlier false-positive accounting in this project's docs.
 
 Only `chalk` came through clean out of 27.
+
+### Per-vector false positives — read the denominator
+
+`metrics.json` → `by_vector[].false_hits` is a **distinct-package count within one arm**. It is
+**not** additive across arms: `parent_benign.tsv` was scanned in arms A, B *and* F, so summing
+double- and triple-counts the same packages. The figures below are **arm F only** — the one arm
+that ran all four layers over the benign corpus — and are distinct legitimate packages out of 27.
+
+| Vector | FP (arm F) | Packages |
+|---|---|---|
+| A1 | 1 | `sqlite` |
+| A2 | 1 | `babel-cli` |
+| A3 | 4 | `axios`, `mongoose`, `mssql`, `react` |
+| B1 | 5 | `axios`, `bcrypt`, `fabric`, `node-sass`, `sqlite3` |
+| B2 | **18 of 27 (67%)** | two thirds of the corpus carry at least one B2 finding |
+| B3 | 1 | `bcrypt` |
+| D3 | 1 | `nodemailer` |
+| E1 | 2 | `fabric`, `node-sass` |
+| META | 11 | `babel-cli`, `d3`, `escape-string-regexp`, `ffmpeg`, `grunt-cli`, `http-proxy`, `ms`, `mysql`, `node-sass`, `shadowsocks`, `sqlite` |
+| A4, B4, C1–C3, D1, D2 | 0 | — |
+
+### BLOCK-level false positives decompose almost entirely to one check
+
+Per-package BLOCK causes, from `armF/findings.csv`:
+
+| Cause | Packages |
+|---|---|
+| `signatures` only | `d3`, `escape-string-regexp`, `ffmpeg`, `grunt-cli`, `http-proxy`, `ms`, `mysql`, `shadowsocks` (8) |
+| `signatures` + `typosquat` | `sqlite` |
+| `signatures` + `namespace` | `babel-cli` |
+| `signatures` + `worm_signature` | `node-sass` |
+| `worm_signature` only | `fabric` |
+
+**Demote `signatures` to INFO and the BLOCK-level false-positive set becomes exactly
+`{fabric, node-sass, sqlite, babel-cli}` — 4/27 (14.8%), down from 12/27 (44.4%).** Eight packages
+clear with no other change. That is the expected outcome of weakness #1 and its acceptance
+criterion.
+
+### BLOCK severity has no discriminative power
+
+- Legitimate packages reaching BLOCK: **44.4%** (12/27, arm F `overall_block_only.fpr`).
+- Real malicious packages reaching BLOCK: **37.5%** (187/499, arm D `overall_block_only_rates.recall`).
+
+The BLOCK rate is *higher* on legitimate packages than on real malware. This is a sharper statement
+of the precision problem than "26 of 27 accused", because it indicts the **severity ladder** rather
+than the volume of findings: the tool's strongest signal currently carries negative information.
 
 ### A1 on the hand-labelled 2017 campaign: 9/30
 
@@ -182,9 +263,19 @@ npm-pre-scan --eval eval/corpus/dummies.tsv --eval-mode full --docker-timeout 90
              --out-dir eval/runs/armC
 ```
 
-**Recall 100%, FPR 0%.** Every vector fired via its intended layer; all three benign controls
-(`dummy_benign_l3`, `dummy_shai_hulud/clean`, `dummy_malicious_update/prev`) came through clean. This
-reproduces the project's existing claims independently, through the batch driver.
+**16/16 packages, 15/16 vectors. FPR 0%.** All three benign controls (`dummy_benign_l3`,
+`dummy_shai_hulud/clean`, `dummy_malicious_update/prev`) came through clean. This reproduces the
+project's existing claims independently, through the batch driver — with two qualifications the
+"100% recall" phrasing hid:
+
+- **`overall.recall = 1.0` but `by_vector` B3 reports `expected 1, detected 0`.** Both are true:
+  `dummy_malicious_update` was caught by B2, so the package-level verdict is a true positive while
+  the B3 rule itself detected nothing. B3 has no path through the harness — it needs a paired
+  prev/latest manifest kind that does not exist yet — so its recall is unmeasured, not zero. State
+  this as **16/16 packages, 15/16 vectors**.
+- **`overall_block_only.recall = 0.5625`.** Even on the tool's own dummy corpus, only **9 of 16**
+  malicious fixtures reach BLOCK; the other 7 stop at SUSPECT. This figure appears in no other
+  document, and it is the arm C counterpart to the BLOCK-severity problem measured in arms D and F.
 
 Per-layer attribution — the "which layer earns its keep" number:
 
@@ -301,6 +392,13 @@ Two further caveats on this arm's dynamic numbers:
 
 ### The two misses
 
+Two entries are package-level false negatives (`classification = FN`): `ansi-styles@6.2.2` and
+`stringmaster-pro@2.0.2`. Separately — and not the same list — `by_vector` records **two labelled
+vector misses**: B3 `expected 1, detected 0` (`ansi-styles@6.2.2`) and B4 `expected 1, detected 0`
+(`node-ipc@12.0.1`). `node-ipc` is a package-level **TP**, caught via B2;C1, so it does not appear
+among the FNs, but **no B4 rule fired on it and B4 recall in arm E is 0/1.** `stringmaster-pro`
+carries no vector label at all, so it belongs to no per-vector row.
+
 **`ansi-styles@6.2.2` — the Sept-2025 chalk/debug compromise — passes all four layers.** This is the
 most consequential single finding in the report: a crypto clipper injected into a package with
 hundreds of millions of weekly downloads, and the tool returns `PASS` with zero findings. All four
@@ -328,8 +426,20 @@ Two things went wrong together:
    wallet object that never exists under `node -e "require(...)"`. Layer 3's env scenario mutates
    `CI`/`HOME`/`USER`/`NODE_ENV`/`TERM`, none of which is a DOM global.
 
-**`stringmaster-pro@2.0.2`** is a weaker miss: it declares 23 dependencies, so `dyn_valid=false` and
-only Layer 1 observed it meaningfully.
+**`stringmaster-pro@2.0.2` is a genuine Layer 1 miss, not a weaker one.** Its 23 declared
+dependencies set `dyn_valid=false`, which invalidates **Layers 2 and 3 only**. Layer 1 ran validly
+and returned `PASS` with **zero findings** on a 9.8 KB `malicious_intent` sample. The dependency
+count explains why the dynamic layers could not corroborate; it does not excuse the static miss.
+Because the entry carries no `expected_vectors` label, it does not move any per-vector recall
+figure — which is precisely why it needs stating here instead.
+
+**`node-ipc@12.0.1` — B4 recall in this arm is 0/1.** The labelled protestware wiper was caught as
+a package (`SUSPECT`, TP) but via **B2;C1**, not B4: the destructive file overwrite never triggered
+the `mass_deletion` or `sensitive_file_write` rules that B4 exists for. It declares 4 dependencies,
+so `dyn_valid=false` and the dynamic layers are excluded from its denominators, but Layer 1 ran and
+produced 2 findings. A package-level TP obtained through the wrong vector is worth as little as a
+miss when the question is "does B4 work on real malware" — and on the only real B4 sample in the
+corpus, the answer is no.
 
 ---
 
@@ -343,19 +453,38 @@ npm-pre-scan --eval eval/corpus/parent_benign.tsv --eval-mode full --docker-time
 Arm B capped the legitimate packages at Layer 1, so the dynamic layers' precision on real software had
 still never been measured. This arm closes that.
 
-Of 27 legitimate packages, **10 were dependency-free and therefore dynamically analysable** (the other
-17 declare dependencies the offline sandbox cannot install; their empty profiles are vacuous and are
-excluded).
+Of 27 legitimate packages, **11 are dependency-free**, but only **10 completed a valid dynamic
+run** — keep those two counts apart, they are not the same set. The other **16** declare
+dependencies the offline sandbox cannot install; their empty profiles are vacuous and are excluded.
+The eleventh dependency-free package, `shadowsocks`, errored out on the wall-clock timeout (below).
 
 | Layer | False positives | Rate |
 |---|---|---|
 | L2 (dynamic, baseline-subtracted) | **0 / 10** | **0%** |
 | L3 (condition mutation) | 1 / 10 | 10% |
 
-**Layer 2's baseline subtraction holds up on real software.** Not one of `jquery`, `lodash`, `react`,
-`ms`, `semver`, `chalk`, `escape-string-regexp`, `nodemailer`, `shadowsocks` or `sqlite` produced a
-single Layer 2 finding. That is a real validation of the v13 baseline-diff work — previously evidenced
-only by `dummy_benign_l3`, a package whose entire body is `add(a, b)`.
+**Layer 2's baseline subtraction holds up on real software.** Not one of `chalk`,
+`escape-string-regexp`, `fabric`, `jquery`, `lodash`, `ms`, `nodemailer`, `react`, `semver` or
+`sqlite` produced a single Layer 2 finding. That is a real validation of the v13 baseline-diff work
+— previously evidenced only by `dummy_benign_l3`, a package whose entire body is `add(a, b)`.
+
+**`fabric` is the instructive one in that list.** Layer 1 BLOCKs it via `worm_signature`, yet it
+passes both dynamic layers cleanly — there is no behaviour to corroborate the static accusation.
+That is direct evidence for weakness #2 below.
+
+⚠ **`shadowsocks` exhausted the dynamic timeout in BOTH layers, with no finding and no recorded
+cause.** From `results.csv`: `l2_status=error, l2_ms=605074, l3_status=error, l3_ms=605070,
+total_ms=1210623, declared_deps=0`. A dependency-free, legitimate package hit the
+`--docker-timeout 600` wall twice over. Consequences:
+
+- It is **not** one of the ten packages that "produced no Layer 2 finding" — it produced no
+  *result*. Earlier drafts of this report and of `CLAUDE.md` listed it there and omitted `fabric`.
+- It alone accounts for **84% of arm F's 24.0-minute wall clock** (`timing.total_ms = 1437470`).
+  **Without it, arm F takes 3.8 minutes.**
+- This is a **different cost risk** from `dummy_slow_exfil`'s 467 s. That one is deliberate
+  sinkholed DNS doing exactly what the fixture was built to do. Here there is no diagnosis at all:
+  no finding, no error class beyond `error`, no partial profile. `dyn_valid` cannot screen for it,
+  because the package legitimately declares zero dependencies. Known limitation, currently unfixed.
 
 **Layer 3's one false positive names a structural limit of D3.** `nodemailer` →
 `trigger_on_use (D3) SUSPECT: Import-phase side effect detected: network activity`. The fuzz scenario
@@ -371,6 +500,88 @@ package's stated purpose), which Layer 2's classifier already reasons about.
 
 Note also that arm F's headline FPR is **96.3% (26/27)**, unchanged from arm B: the extra layers added
 essentially no new false positives, because Layers 0 and 1 had already accused nearly everything.
+
+---
+
+## v18 — first fix pass, measured against the v17 baseline
+
+Queue items **0, 1, 2, 3, 5, 6** implemented (2026-08-04). Items 4, 7, 8, 9, 10 remain open. Arms
+A, B, C and F re-run; D and E not re-run (Layer-1-on-malware arms, unaffected by these fixes except
+via item 3, which arm E would show — see the caveat at the end of this section). Before/after is
+against `eval/baseline/v17/`, and the new numbers are archived at `eval/baseline/v18/`.
+
+| arm | any-finding FP | **BLOCK-level FP** | recall | FPR | ARTIFACT_FN |
+|---|---|---|---|---|---|
+| A (216,888 names, offline) | 2 → 1 | 2 → 1 | 1.6% → 1.3% | 7.4% → **3.7%** | 0 → 0 |
+| B (65, live registry) | 28 → 20 | **14 → 0** | 91.4% → 85.7% | 93.3% → **66.7%** | 0 → **14** |
+| C (19 dummies) | 0 → 0 | 0 → 0 | 16/16 pkgs, 15/16 vectors — unchanged | 0% → 0% | 0 → 0 |
+| F (27 legitimate) | 26 → 19 | **12 → 0** | — | 96.3% → **70.4%** | 0 → 0 |
+
+**The headline: zero BLOCK-level false positives.** Not one of the 27 legitimate packages is
+BLOCK'd any more, and arm F produced **no BLOCK-severity finding of any kind**. The v17 target was
+12/27 → 4/27; the residue `{fabric, node-sass, sqlite, babel-cli}` was cleared as well, by items 2,
+5 and 6 respectively. Arm F's BLOCK-only FPR is 44.4% → **0.0%**, and its true negatives went 1 →
+8.
+
+Per-vector false positives on the benign corpus (distinct legitimate packages, arm F):
+
+| vector | v17 | v18 | owner |
+|---|---|---|---|
+| META (`signatures`) | 11 | **0** | item 1 |
+| A1 (`typosquat`) | 1 | **0** | item 5 |
+| A2 (`namespace`) | 1 | **0** | item 6 |
+| A3 (`maintainer`) | 4 | 3 | still open |
+| B1 (`install_script`) | 5 | 5 | item 4 |
+| B2 (obfuscation / suspicious_strings) | 18 | 18 | item 4 |
+| B3, D3 | 1, 1 | 1, 1 | items 4, 7 |
+| E1 (`worm_signature`) | 2 | 2 | now SUSPECT, no longer BLOCK |
+
+Everything still firing is SUSPECT-level. That is why arm F's *any-finding* FPR only falls 96.3% →
+70.4%: the static heuristics of item 4 still touch two thirds of the corpus, they just no longer
+refuse an install.
+
+### Four results worth stating separately
+
+**1. `signatures` no longer props up recall.** All 45 signature findings across arm B are now INFO
+— zero BLOCK, zero SUSPECT. All 18 of arm B's true positives are caught by **A1 name detection**;
+in v17, 23 of 32 came from `signatures` firing on npm's own takedown stubs. The v17 report's
+central criticism is resolved at the mechanism level, not just in the aggregate.
+
+**2. The honest name-detection figure went UP, not down.** The fix was predicted to drop arm B's
+recall from 91.4% to roughly 25.7% — the mechanism-attributed Layer 0 figure. It landed at
+**85.7%**, because item 5 genuinely fixed detection at the same time: nine suffix squats
+(`cross-env.js`, `d3.js`, `fabric-js`, `http-proxy.js`, `jquery.js`, `mssql.js`, `nodemailer-js`,
+`nodemailer.js`, `proxy.js`) and `ffmepg` are now caught by name, where before they were missed
+entirely. So the comparison that matters is **25.7% → 85.7% on real name detection**, and the
+91.4% it replaced was never detection at all.
+
+**3. `ARTIFACT_FN` is no longer inert — it went 0 → 14.** The safeguard documented in
+`eval/README.md`, which v17 could never exercise, is now doing its job: with `signatures` no longer
+BLOCK-ing npm's defanged takedown stubs, a clean verdict on a `holder` entry is correctly
+classified `ARTIFACT_FN` and kept out of recall's denominator. Arm B's denominator is therefore 21,
+not 35 — which is the honest one, since the corpus cannot deliver those 14 packages' malice.
+
+**4. Arm A trades coincidental hits for a halved false-positive rate.** Detections fall 3,451 →
+2,841. Of the 610 lost, **608 have a bare name of 4 characters or fewer** — the accidental
+distance-2 matches the new length guard removes (`smb`→`pm2` was the measured example). The other 2
+are `@cap-js/sqlite` and `@nativescript-community/sqlite`, which bare-match the newly-added
+`sqlite` and now return INFO instead of an accidental distance-1 hit on `sqlite3`. Meanwhile 98
+names are newly caught as suffix squats, precision ticks up 99.94% → 99.96%, and BLOCK-level true
+positives rise 421 → 483. `sqlite` is cleared; `babel-cli` remains arm A's one false positive,
+because the establishment guard is registry-path only and arm A is name-only by construction.
+
+### What this pass did NOT establish
+
+- **Arm E was not re-run**, so the effect of item 3 on real-malware recall is unmeasured here.
+  `ansi-styles@6.2.2` was verified directly instead: it scored **PASS with zero findings** in v17
+  and now scores **BLOCK** on 314 distinct `_0x` identifiers. Arm E is where that would show up as
+  a recall number, and it should be re-run before any recall figure is quoted.
+- **Arm D was not re-run** either; it is Layer-1-only on 499 malicious payloads and item 3 can only
+  raise it.
+- **The remaining 70.4% arm F FPR is untouched by this pass** and belongs to item 4.
+- **Item 10 (severity + score aggregation) is still open**, and the v17 finding that motivates it
+  is now half-answered: BLOCK no longer fires on legitimate packages at all (0% vs arm D's 37.5%),
+  which fixes the inversion but says nothing about the score's saturation.
 
 ---
 
@@ -408,7 +619,21 @@ adding a regression test that pins this distinction, since the failure is silent
 
 `fabric` and `node-sass` are BLOCK'd with "Self-propagation indicator … (npm publish / authToken /
 registry PUT)", from `publish-next.js`, `scripts/util/rejectUnauthorized.js`, `scripts/util/proxy.js`
-and `lib/extensions.js`. These are ordinary maintainer tooling. 4 findings across 2 of 27 packages.
+and `lib/extensions.js`. These are ordinary maintainer tooling.
+
+All four paths are archived — in `eval/runs/armF/records.jsonl`, on the `file` field of each
+finding (not in `findings.csv`, which has no `file` column). Re-scanning the published tarballs in
+v18 reproduced them exactly.
+
+The split is not even: **4 findings across 2 of 27 packages — `fabric` 1, `node-sass` 3.** A single
+self-propagation hit was enough to BLOCK, which is the defect. Note also that `fabric` passes
+**both** dynamic layers cleanly in this same arm: no observed behaviour anywhere in the pipeline
+corroborated the accusation.
+
+> **FIXED in v18.** Each category now emits SUSPECT; only the ≥2-category aggregate, or a
+> known-IOC hash, BLOCKs — which is what `worm_signature`'s own doc comment always claimed. Both
+> packages verified after the change: `fabric` and `node-sass` drop to SUSPECT, and the
+> Shai-Hulud fixture keeps its BLOCK via two categories plus its IOC hash.
 
 **Fix.** The self-propagation category is doing too much work alone. Require corroboration before
 `BLOCK` (the aggregate `worm` rule already demands ≥2 categories — the *individual* category should
@@ -431,9 +656,12 @@ missing when the threshold was last tuned.
 **Severity: high in aggregate** (drives the 70% FPR that remains after removing `signatures`), though
 each individual finding is only `SUSPECT`.
 
-On 27 legitimate packages: `suspicious_strings` 43 findings across 13 packages, `obfuscation` 20
-across 6 (9 on `jquery` alone, 5 on `lodash`), `dynamic_require` 8, `install_script` 5,
-`network_imports` 4. Only `chalk` came through clean.
+On 27 legitimate packages — **package counts are the number a calibration change has to move**, so
+both are given: `suspicious_strings` 43 findings across **12** packages, `obfuscation` 20 across
+**5** (9 on `jquery` alone, 5 on `lodash`), `dynamic_require` 8 across 4, `install_script` 5 across
+5, `network_imports` 4 across 4. Two more fired here and were missing from every earlier FP
+accounting: `shell_exfil` SUSPECT on `shadowsocks`, `version_diff` SUSPECT on `bcrypt`. As a
+vector, B2 reaches **18 of the 27 (67%)**. Only `chalk` came through clean.
 
 **Fix.** This is a calibration problem, and the harness now supplies the missing input. Suggested
 order: demote `suspicious_strings` on `process.env`/`os.homedir()` to INFO unless combined with a
@@ -516,8 +744,26 @@ way, record in the report which packages were dynamically analysable.
   the DataDog corpus is a ready source of additional hashes.
 - **`dummy_slow_exfil` takes 467 s** (24× the arm C median) from 35 sequential sinkholed DNS lookups.
   Worth knowing before running the dynamic layers over a large corpus.
+- **A dependency-free legitimate package can exhaust the dynamic timeout with no finding and no
+  recorded cause.** `shadowsocks` hit the `--docker-timeout 600` wall in *both* layers
+  (`l2_status=error` 605074 ms, `l3_status=error` 605070 ms, `declared_deps=0`) and yielded nothing
+  — 84% of arm F's 24.0-minute total; the arm takes 3.8 min without it. This is a **different** cost
+  risk from `dummy_slow_exfil` above: that one is deliberate sinkholed DNS behaving as designed,
+  whereas here there is no diagnosis at all and `dyn_valid` cannot screen for it, because the
+  package genuinely declares zero dependencies. Worth an error class that distinguishes "timed out"
+  from "errored", and a per-package budget below the arm budget.
 - **`dummy_persistence` is mis-attributed to D2.** Its `.bashrc` write is unconditional at import, so
   the Layer 3 env scenario is claiming credit for behaviour it did not trigger.
+- **`ARTIFACT_FN` has never fired.** `overall.artifact_fn = 0` in all six arms. The classification is
+  documented in `eval/README.md` as what keeps defanged takedown stubs out of recall's denominator,
+  but because the content layers never ran on `holder` entries (arm B is Layer 0 only on the
+  malicious half), it was never assigned once. The safeguard is not wrong — it is **untested by this
+  run**. Do not cite it as validated until an arm exercises it.
+- **B3 has no path through the harness.** It is 0/1 in arms B, C and E alike, for want of a `pair`
+  manifest kind expressing a prev/latest directory — not for want of a rule. Its recall is
+  unmeasured, not zero.
+- **B4 did not fire on the one real B4 sample.** `node-ipc@12.0.1` was caught via B2;C1 instead, so
+  arm E's B4 recall is 0/1 even though the package is a package-level true positive.
 - **B3 has no path through the harness.** `version_diff` needs a prev/latest pair, which the manifest
   format cannot express; arm C reports B3 recall 0% for that reason alone (the package was still
   caught via B2). A `pair` manifest kind would close this.
@@ -573,8 +819,9 @@ The harness is new code, so the numbers depend on it being right. What was check
   labels were hand-verified.
 - **Arm D has no benign control**, so its 88.8% recall and F1 0.94 cannot be compared against
   OSCAR's F1 0.95 — precision there is measured on arms B and F, and it is poor.
-- **The dynamic layers were measured on a minority of each corpus** (10/27 legitimate, 28/40 malicious),
-  because the offline sandbox cannot install dependencies.
+- **The dynamic layers were measured on a minority of each corpus.** 11/27 legitimate packages are
+  dependency-free but only **10 completed a valid run** (`shadowsocks` timed out in both layers);
+  28/40 malicious. The offline sandbox cannot install dependencies.
 - **40 samples is a small dynamic corpus.** The "L2/L3 sole detector = 0" result is suggestive, not
   conclusive; it would take a larger and deliberately condition-gated sample to settle.
 - **Everything ran serially.** Concurrency would perturb the very timings and container behaviours
@@ -595,7 +842,8 @@ cargo build --release
     --docker-timeout 900 --out-dir eval/runs/armC
 ./target/release/npm-pre-scan --eval eval/corpus/datadog_static.tsv --eval-mode registry \
     --out-dir eval/runs/armD
-# E: Docker + live malware, 23 min      F: Docker, ~45 min
+# E: Docker + live malware, 23 min      F: Docker, 24 min (84% of it is shadowsocks
+#                                          hitting the 600 s timeout twice; 3.8 min without it)
 ./target/release/npm-pre-scan --eval eval/corpus/datadog_dynamic.tsv --eval-mode full \
     --docker-timeout 600 --out-dir eval/runs/armE
 ./target/release/npm-pre-scan --eval eval/corpus/parent_benign.tsv --eval-mode full \
