@@ -1,0 +1,348 @@
+{
+  "provenance": {
+    "tool_version": "0.1.0",
+    "started_at": "2026-07-30T06:26:47.308497185+00:00",
+    "finished_at": "2026-07-30T06:49:19.086385611+00:00",
+    "eval_mode": "full",
+    "manifests": [
+      "eval/corpus/parent_benign.tsv"
+    ],
+    "entry_count": 27,
+    "docker_version": "Docker version 29.6.2, build dfc4efb1e2",
+    "ptrace_probe": "granted",
+    "docker_timeout_secs": 600,
+    "top_list_refreshed": false,
+    "top_packages_len": 1137,
+    "top_scoped_len": 94,
+    "host_os": "linux"
+  },
+  "record_count": 27,
+  "outcomes": {
+    "scanned": 27,
+    "skipped_missing": 0,
+    "registry_not_found": 0,
+    "registry_failed": 0,
+    "timeout": 0
+  },
+  "overall": {
+    "true_positive": 0,
+    "false_positive": 26,
+    "true_negative": 1,
+    "false_negative": 0,
+    "artifact_fn": 0,
+    "error": 0,
+    "skipped": 0
+  },
+  "overall_rates": {
+    "scored": 27,
+    "recall": null,
+    "precision": 0.0,
+    "fpr": 0.9629629629629629,
+    "f1": null,
+    "accuracy": 0.037037037037037035
+  },
+  "overall_block_only": {
+    "true_positive": 0,
+    "false_positive": 12,
+    "true_negative": 15,
+    "false_negative": 0,
+    "artifact_fn": 0,
+    "error": 0,
+    "skipped": 0
+  },
+  "overall_block_only_rates": {
+    "scored": 27,
+    "recall": null,
+    "precision": 0.0,
+    "fpr": 0.4444444444444444,
+    "f1": null,
+    "accuracy": 0.5555555555555556
+  },
+  "by_group": [
+    {
+      "group": "parent_benign",
+      "confusion": {
+        "true_positive": 0,
+        "false_positive": 26,
+        "true_negative": 1,
+        "false_negative": 0,
+        "artifact_fn": 0,
+        "error": 0,
+        "skipped": 0
+      },
+      "rates": {
+        "scored": 27,
+        "recall": null,
+        "precision": 0.0,
+        "fpr": 0.9629629629629629,
+        "f1": null,
+        "accuracy": 0.037037037037037035
+      }
+    }
+  ],
+  "by_layer": [
+    {
+      "layer": 0,
+      "ran": 27,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 0,
+      "block": 11,
+      "suspect": 4,
+      "pass": 12,
+      "finding_count": 39,
+      "sole_detector": 0,
+      "false_hits": 15,
+      "ms_p50": 128,
+      "ms_p90": 316,
+      "ms_max": 1139,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 1,
+      "ran": 27,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 0,
+      "block": 2,
+      "suspect": 17,
+      "pass": 8,
+      "finding_count": 86,
+      "sole_detector": 0,
+      "false_hits": 19,
+      "ms_p50": 97,
+      "ms_p90": 213,
+      "ms_max": 612,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 2,
+      "ran": 10,
+      "error": 1,
+      "not_run": 0,
+      "skipped": 16,
+      "block": 0,
+      "suspect": 0,
+      "pass": 10,
+      "finding_count": 0,
+      "sole_detector": 0,
+      "false_hits": 0,
+      "ms_p50": 11253,
+      "ms_p90": 11532,
+      "ms_max": 605074,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 3,
+      "ran": 10,
+      "error": 1,
+      "not_run": 0,
+      "skipped": 16,
+      "block": 0,
+      "suspect": 1,
+      "pass": 9,
+      "finding_count": 1,
+      "sole_detector": 0,
+      "false_hits": 1,
+      "ms_p50": 8933,
+      "ms_p90": 21985,
+      "ms_max": 605070,
+      "excluded_not_dyn_valid": 0
+    }
+  ],
+  "by_vector": [
+    {
+      "vector": "A1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 1,
+      "total_fires": 1
+    },
+    {
+      "vector": "A2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 1,
+      "total_fires": 1
+    },
+    {
+      "vector": "A3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 4,
+      "total_fires": 4
+    },
+    {
+      "vector": "A4",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "META",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 11,
+      "total_fires": 11
+    },
+    {
+      "vector": "B1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 5,
+      "total_fires": 5
+    },
+    {
+      "vector": "B2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 18,
+      "total_fires": 18
+    },
+    {
+      "vector": "B3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 1,
+      "total_fires": 1
+    },
+    {
+      "vector": "B4",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "C1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "C2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "C3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 1,
+      "total_fires": 1
+    },
+    {
+      "vector": "E1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 2,
+      "total_fires": 2
+    }
+  ],
+  "timing": {
+    "total_ms": 1437470,
+    "p50": 718,
+    "p90": 21275,
+    "p99": 1210623,
+    "max": 1210623,
+    "slowest": [
+      [
+        "shadowsocks",
+        1210623
+      ],
+      [
+        "nodemailer",
+        33831
+      ],
+      [
+        "fabric",
+        21793
+      ],
+      [
+        "lodash",
+        21275
+      ],
+      [
+        "jquery",
+        20816
+      ],
+      [
+        "semver",
+        20610
+      ],
+      [
+        "react",
+        20599
+      ],
+      [
+        "sqlite",
+        20484
+      ],
+      [
+        "chalk",
+        20164
+      ],
+      [
+        "escape-string-regexp",
+        19911
+      ]
+    ]
+  }
+}

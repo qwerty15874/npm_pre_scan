@@ -193,7 +193,16 @@ fn metrics_json_is_written_and_readable_back() {
     assert_eq!(m.provenance.tool_version, env!("CARGO_PKG_VERSION"));
     assert!(m.provenance.docker_version.is_some(), "docker version not recorded");
     assert!(m.provenance.finished_at.is_some());
-    assert_eq!(m.provenance.top_packages_len, 1137);
+    // What this actually guards is that the runner recorded the EMBEDDED list,
+    // not a `--refresh-top` sweep (asserted on the next line). Comparing against
+    // the embedded list's own length rather than a hard-coded count keeps that
+    // guarantee without breaking every time the curated list is edited — v18
+    // added five "absent parent" names and moved it 1137 -> 1142.
+    assert_eq!(
+        m.provenance.top_packages_len,
+        npm_pre_scan::typosquat::load_top_packages().len()
+    );
+    assert!(m.provenance.top_packages_len > 1000, "list looks truncated");
     assert!(!m.provenance.top_list_refreshed);
     assert_eq!(m.provenance.docker_timeout_secs, Some(900));
 

@@ -1,5 +1,6 @@
 use regex::Regex;
 use serde_json::{Map, Value};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -79,6 +80,15 @@ pub fn check_install_scripts(pkg_json: &Value) -> Vec<Finding> {
 /// prefix (mediatypes can be long, e.g. `application/vnd.openxmlformats-...`).
 const DATA_URI_CONTEXT_WINDOW: usize = 80;
 
+/// Distinct `_0x…` identifiers in one file at which obfuscation is no longer
+/// deniable. `ansi-styles@6.2.2` (real crypto clipper) has 314; every benign
+/// package measured has 0. 25 keeps a >12x margin under the observed malicious
+/// value while staying far above any plausible hand-written use.
+const HEX_IDENT_BLOCK: usize = 25;
+
+/// Lower band — worth surfacing, not worth refusing an install over.
+const HEX_IDENT_SUSPECT: usize = 5;
+
 /// Return true if the base64-like match starting at `match_start` in `content`
 /// is immediately preceded (within `DATA_URI_CONTEXT_WINDOW` chars) by a
 /// `;base64,` marker — i.e. it is a `data:` URI payload, not an obfuscated
@@ -108,6 +118,35 @@ fn is_data_uri_context(content: &str, match_start: usize) -> bool {
 ///     like `\x1b[0m\x1b[1m`) almost never reaches that many raw escapes in a row
 ///     because each CSI code is followed by literal bracket/digit text, not more
 ///     escapes; long obfuscated hex payloads comfortably exceed it.
+///   - hex identifiers: counts DISTINCT `_0x…` names, not total occurrences — a
+///     minifier reusing one such name is nothing like a generator emitting
+///     hundreds of them. Raw `0x` literal counts are deliberately NOT used: `d3`
+///     ships 174 of them legitimately.
+///
+/// ## The `_0x` rule and why the hex rule alone was not enough (v18)
+///
+/// v14 raised the `\xNN` threshold 4 -> 8 to stop false-positiving on chalk-style
+/// ANSI strings. That was right, but it left the `javascript-obfuscator` family
+/// completely unseen — it emits no `\xNN` runs at all. It emits `_0x`-prefixed
+/// identifiers and short hex numeric literals.
+///
+/// The cost was measured in v17: `ansi-styles@6.2.2`, the real Sept-2025
+/// chalk/debug compromise (a crypto clipper), **passed all four layers** with
+/// zero findings. Its 80 KB payload has 4 `\xNN` escapes where the rule needs 8
+/// consecutive, and no `eval`/`atob`/`Buffer.from`/`Function`/`process.env`/
+/// network-require at all.
+///
+/// Measured separation (v18, distinct `_0x[0-9a-fA-F]{4,}` identifiers per file):
+///
+/// | corpus | distinct `_0x` |
+/// |---|---|
+/// | `ansi-styles@6.2.2` `index.js` (malicious) | **314** |
+/// | `jquery`, `lodash`, `d3`, `react`, `chalk`, `debug`, `node-sass`, `fabric` | **0** |
+///
+/// Not one benign package examined contains a single such identifier — terser and
+/// uglify emit short names (`a`, `_t`), never `_0x1a2b`. The thresholds below sit
+/// an order of magnitude under the observed malicious value while leaving room
+/// for a hand-written mask constant or two.
 pub fn check_obfuscation(dir: &Path) -> Vec<Finding> {
     let re_eval_buf = Regex::new(r"eval\s*\(\s*Buffer\.from\s*\(").unwrap();
     let re_eval = Regex::new(r"eval\s*\(").unwrap();
@@ -120,6 +159,9 @@ pub fn check_obfuscation(dir: &Path) -> Vec<Finding> {
     // a string body. This deliberately does NOT match `Function.prototype` or a
     // bare `Function` reference (no `(` immediately after in those cases).
     let re_function_ctor = Regex::new(r#"\bFunction\s*\(\s*['"]"#).unwrap();
+    // javascript-obfuscator's signature: machine-generated `_0x1a2b3c` identifiers.
+    // `{4,}` skips short hand-written names like `_0xFF`.
+    let re_hex_ident = Regex::new(r"_0x[0-9a-fA-F]{4,}").unwrap();
 
     let mut findings = Vec::new();
     for path in js_files(dir) {
@@ -201,6 +243,41 @@ pub fn check_obfuscation(dir: &Path) -> Vec<Finding> {
                 "obfuscation",
                 "SUSPECT",
                 "Function() constructor with string body — dynamic code execution",
+                "B2",
+            );
+            // NOTE: `file` is cloned, not moved — the hex-identifier rule below
+            // needs it too.
+            f.insert("file".into(), Value::String(file.clone()));
+            findings.push(f);
+        }
+
+        // Hex-identifier density (v18) — the javascript-obfuscator family.
+        let distinct_hex_idents = re_hex_ident
+            .find_iter(&content)
+            .map(|m| m.as_str())
+            .collect::<HashSet<_>>()
+            .len();
+        if distinct_hex_idents >= HEX_IDENT_BLOCK {
+            let mut f = finding(
+                "obfuscation",
+                "BLOCK",
+                &format!(
+                    "Hex-identifier obfuscation: {} distinct `_0x...` identifiers — \
+                     machine-generated name mangling (javascript-obfuscator family)",
+                    distinct_hex_idents
+                ),
+                "B2",
+            );
+            f.insert("file".into(), Value::String(file));
+            findings.push(f);
+        } else if distinct_hex_idents >= HEX_IDENT_SUSPECT {
+            let mut f = finding(
+                "obfuscation",
+                "SUSPECT",
+                &format!(
+                    "Hex-identifier naming: {} distinct `_0x...` identifiers",
+                    distinct_hex_idents
+                ),
                 "B2",
             );
             f.insert("file".into(), Value::String(file));
@@ -681,6 +758,88 @@ mod tests {
                 == Some("Function() constructor with string body — dynamic code execution")),
             "Function.prototype.bind must not trip the Function-ctor rule; got: {:?}",
             f
+        );
+    }
+
+    // ── Hex-identifier density (v18) ───────────────────────────────────────────
+    // Closes the javascript-obfuscator gap that let ansi-styles@6.2.2 — a real
+    // Sept-2025 crypto clipper — pass all four layers.
+
+    /// Build a body with `n` distinct `_0x…` identifiers, shaped like real
+    /// obfuscator output (no eval/atob/Buffer.from anywhere — that is precisely
+    /// why the existing rules missed the real sample).
+    fn hex_ident_body(n: usize) -> String {
+        let mut s = String::from("function _0xdeadbe(){\n");
+        for i in 0..n {
+            s.push_str(&format!("  var _0x{:06x} = {}[{}];\n", i * 0x2b + 0x1000, "_0xabc123", i));
+        }
+        s.push_str("}\n");
+        s
+    }
+
+    #[test]
+    fn hex_identifier_density_blocks() {
+        let d = dir_with(&[("index.js", &hex_ident_body(HEX_IDENT_BLOCK + 10))]);
+        let f = check_obfuscation(d.path());
+        let hit = f
+            .iter()
+            .find(|x| {
+                x.get("message")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|m| m.starts_with("Hex-identifier obfuscation"))
+            })
+            .unwrap_or_else(|| panic!("expected a hex-identifier BLOCK; got: {f:?}"));
+        assert_eq!(hit.get("severity").and_then(|v| v.as_str()), Some("BLOCK"));
+        assert_eq!(hit.get("vector").and_then(|v| v.as_str()), Some("B2"));
+    }
+
+    #[test]
+    fn hex_identifier_middle_band_is_suspect() {
+        let d = dir_with(&[("index.js", &hex_ident_body(HEX_IDENT_SUSPECT + 1))]);
+        let f = check_obfuscation(d.path());
+        let hit = f
+            .iter()
+            .find(|x| {
+                x.get("message")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|m| m.starts_with("Hex-identifier naming"))
+            })
+            .unwrap_or_else(|| panic!("expected a hex-identifier SUSPECT; got: {f:?}"));
+        assert_eq!(hit.get("severity").and_then(|v| v.as_str()), Some("SUSPECT"));
+    }
+
+    /// FP-CONTROL: a couple of hand-written hex-ish names must not trip it.
+    #[test]
+    fn a_few_hex_identifiers_are_not_flagged() {
+        let d = dir_with(&[(
+            "mask.js",
+            "const _0xFFFF0000 = 0xffff0000;\nconst _0x0000FFFF = 0x0000ffff;\n\
+             module.exports = (v) => (v & _0xFFFF0000) | (v & _0x0000FFFF);",
+        )]);
+        let f = check_obfuscation(d.path());
+        assert!(
+            f.is_empty(),
+            "two hand-written mask constants are not obfuscation; got: {f:?}"
+        );
+    }
+
+    /// FP-CONTROL: ordinary minified output. terser/uglify emit short names
+    /// (`a`, `_t`, `n`) and plenty of hex literals — never `_0x` identifiers.
+    /// Measured: `d3` ships 174 hex literals and zero `_0x` names, which is why
+    /// the rule counts identifiers rather than literals.
+    #[test]
+    fn terser_style_minified_code_is_not_flagged() {
+        let mut body = String::from("!function(a,b){var n=0x1f,t=0xff,e=0x2a;");
+        for i in 0..200 {
+            body.push_str(&format!("var _v{i}=0x{i:x};"));
+        }
+        body.push_str("}(window,document);");
+        let d = dir_with(&[("bundle.min.js", &body)]);
+        let f = check_obfuscation(d.path());
+        assert!(
+            f.is_empty(),
+            "minified code with many hex LITERALS but no `_0x` identifiers must \
+             stay clean; got: {f:?}"
         );
     }
 

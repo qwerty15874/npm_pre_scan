@@ -29,6 +29,26 @@ WORK_DIR=/work
 # (which would blow up log volume).
 STRACE_SYSCALLS="execve,open,openat,openat2,connect,unlink,unlinkat,rename,renameat,renameat2,chmod,fchmodat"
 
+# ── Pinned clocks (D1) ─────────────────────────────────────────────────────────
+# EVERY scenario runs under libfaketime at a PINNED absolute date, not the real
+# wall clock. This is what makes D1 detection time-invariant.
+#
+# Why: Layer 3 is purely differential. If the baseline ran on the real clock, a
+# date-gated payload whose trigger date has already PASSED would fire in the
+# baseline too, the diff would come back empty, and D1 detection would silently
+# drop to zero — with no failure anywhere to say so. That is exactly what would
+# have happened to dummy_timebomb (trigger 2026-09-01) once the host date
+# crossed it. Re-dating the fixture only buys a year; pinning both ends fixes it
+# for good.
+#
+# INVARIANT: FAKETIME_BASE < every fixture trigger date < FAKETIME_CLOCK.
+# tests/layer3_clock_pin.rs parses these two lines and enforces the ordering
+# offline, because the live D1 tests are #[ignore]d and would not catch a drift
+# until someone next ran the Docker suite.
+FAKETIME_BASE="@2026-07-01 00:00:00"
+FAKETIME_CLOCK="@2026-09-29 00:00:00"
+FAKETIME_LIB=/usr/lib/faketime/libfaketime.so.1
+
 mkdir -p "$OUT_DIR"
 
 echo "Layer 3: starting condition-mutation analysis of $PKG_DIR" >&2
@@ -87,43 +107,57 @@ stop_dns() {
 # signature matches the clock/env scenarios (which necessarily use `env` to set
 # LD_PRELOAD/FAKETIME/unset CI). Without this symmetry the `env` exec itself
 # would appear as a NEW "child process" in every mutated diff → false SUSPECT.
+#
+# The same symmetry argument now applies to libfaketime: it is LD_PRELOAD'd in
+# EVERY scenario (at FAKETIME_BASE here, FAKETIME_CLOCK in the clock scenario),
+# so the loader's own opens and its /dev/shm/faketime_* artifacts appear on both
+# sides of every diff and cancel. (layer2::classify::is_ephemeral_or_system_path
+# already filters those artifacts, so this is belt-and-braces — but it also means
+# the ONLY difference between baseline and clock is the date itself.)
 start_dns baseline
 strace -f \
     -e trace="$STRACE_SYSCALLS" \
     -o "$OUT_DIR/strace_baseline.log" \
-    env node -e "try { require('$WORK_DIR'); } catch(e) { process.stderr.write('require error: ' + e.message + '\n'); }" 2>&1 || true
+    env LD_PRELOAD="$FAKETIME_LIB" FAKETIME="$FAKETIME_BASE" \
+    node -e "try { require('$WORK_DIR'); } catch(e) { process.stderr.write('require error: ' + e.message + '\n'); }" 2>&1 || true
 stop_dns
-echo "Layer 3: baseline scenario complete" >&2
+echo "Layer 3: baseline scenario complete (clock pinned $FAKETIME_BASE)" >&2
 
-# ── Scenario: clock — libfaketime, absolute +90d from 2026-07-01 ────────────────
+# ── Scenario: clock — libfaketime, pinned FAKETIME_CLOCK (+90d from base) ───────
+# The mutation is the DATE and nothing else: same LD_PRELOAD, same env, same
+# command as baseline. Anything in this diff was caused by moving the clock.
 start_dns clock
 strace -f \
     -e trace="$STRACE_SYSCALLS" \
     -o "$OUT_DIR/strace_clock.log" \
-    env LD_PRELOAD=/usr/lib/faketime/libfaketime.so.1 FAKETIME="@2026-09-29 00:00:00" \
+    env LD_PRELOAD="$FAKETIME_LIB" FAKETIME="$FAKETIME_CLOCK" \
     node -e "try { require('$WORK_DIR'); } catch(e) { process.stderr.write('require error: ' + e.message + '\n'); }" 2>&1 || true
 stop_dns
-echo "Layer 3: clock scenario complete" >&2
+echo "Layer 3: clock scenario complete (clock pinned $FAKETIME_CLOCK)" >&2
 
 # ── Scenario: env — spoof a developer machine, strip CI signals ─────────────────
 # NODE_ENV=production and TERM=xterm-256color widen the developer-machine spoof
 # to also catch payloads gated on NODE_ENV or TTY presence, not just CI vars.
+# Clock stays at FAKETIME_BASE so this scenario's diff isolates the ENV change.
 start_dns env
 strace -f \
     -e trace="$STRACE_SYSCALLS" \
     -o "$OUT_DIR/strace_env.log" \
     env -u CI -u GITHUB_ACTIONS -u CONTINUOUS_INTEGRATION HOME=/home/developer USER=dev NODE_ENV=production TERM=xterm-256color \
+    LD_PRELOAD="$FAKETIME_LIB" FAKETIME="$FAKETIME_BASE" \
     node -e "try { require('$WORK_DIR'); } catch(e) { process.stderr.write('require error: ' + e.message + '\n'); }" 2>&1 || true
 stop_dns
 echo "Layer 3: env scenario complete" >&2
 
 # ── Scenario: fuzz — enumerate + invoke exported API surface ────────────────────
 # `env` prefix kept symmetric with baseline/clock/env (see baseline note).
+# Clock stays at FAKETIME_BASE so this scenario's diff isolates the API calls.
 start_dns fuzz
 timeout 30 strace -f \
     -e trace="$STRACE_SYSCALLS" \
     -o "$OUT_DIR/strace_fuzz.log" \
-    env node /fuzz_exports.js "$WORK_DIR" 2>&1 || true
+    env LD_PRELOAD="$FAKETIME_LIB" FAKETIME="$FAKETIME_BASE" \
+    node /fuzz_exports.js "$WORK_DIR" 2>&1 || true
 stop_dns
 echo "Layer 3: fuzz scenario complete" >&2
 

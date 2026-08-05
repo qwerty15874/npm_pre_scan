@@ -3,8 +3,16 @@
 # popular-token set for combosquat detection (src/combosquat.rs).
 # Lines starting with # are comments (skipped by load_top_packages()).
 #
-# Source: curated snapshot of top-downloaded npm packages (approx. 1137 names).
-# Last reviewed/updated: 2026-07-02.
+# Source: curated snapshot of top-downloaded npm packages (approx. 1142 names).
+# Last reviewed/updated: 2026-08-04.
+#
+# v18 addition — five "absent parent" names. v17 measured 12 of 21 A1 misses as
+# cases where the imitated package simply was not in this list, so there was
+# nothing for the distance check to be near (`ffmepg`, `nodefabric`, `nodesqlite`,
+# `shadowsock`, `tkinter`, ...). Adding the parents makes those names reachable.
+# Note `sqlite` also fixes a false positive as a side effect: it is a real package
+# at distance 1 from `sqlite3`, so it used to BLOCK itself; as a list member it
+# now returns INFO on an exact match, in name-only mode as well as registry mode.
 lodash
 express
 chalk
@@ -1142,3 +1150,8 @@ xhr
 deep-assign
 inquirer-autocomplete-prompt
 xpath
+ffmpeg
+fabric
+shadowsocks
+tkinter
+sqlite

@@ -56,9 +56,12 @@ fn key_expired(key: &Value) -> bool {
 /// Verify the npm registry's ECDSA-P256 signature on the latest published version
 /// (equivalent to `npm audit signatures`).
 ///
-/// - valid signature → `None` (clean; no score noise)
+/// - signature verifies under an unexpired key → `None` (clean; no score noise)
+/// - signature verifies under an **expired** key → INFO (see below)
+/// - signature present and verification **fails** → BLOCK (genuine tampering signal)
+/// - no key in the registry key set matches the signature's keyid → SUSPECT
+///   (unverifiable, which is not the same as tampered)
 /// - `dist.signatures` missing → SUSPECT (version not signed)
-/// - present-but-invalid, or no valid/unexpired key → BLOCK (possible tampering)
 /// - no SRI integrity → `None` (nothing to verify against; best-effort, never false-BLOCK)
 /// - registry keys unfetchable (network/parse error) → INFO note ("signature
 ///   verification skipped — registry keys unavailable"). This is deliberately
@@ -67,6 +70,28 @@ fn key_expired(key: &Value) -> bool {
 ///   a properly signed one whenever the keys endpoint has a transient failure.
 ///   INFO does not affect the aggregate verdict (never false-BLOCK/SUSPECT)
 ///   but is visible in findings/score.
+///
+/// ## Why expiry is INFO and not BLOCK (v18 — measured defect, fixed)
+///
+/// npm rotated its registry signing key; the old key
+/// `SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA` expired 2025-01-29.
+/// This function used to select the verifying key with
+/// `keyid matches && !key_expired(k)`, so for any package not republished since
+/// the rotation the lookup found nothing, skipped every signature, and returned
+/// an unconditional BLOCK — **without ever checking the signature**.
+///
+/// v17 measured the cost: 11 of 27 legitimate popular packages BLOCK'd
+/// (`ms`, `mysql`, `d3`, `ffmpeg`, `http-proxy`, `node-sass`, `grunt-cli`,
+/// `babel-cli`, `escape-string-regexp`, `shadowsocks`, `sqlite`), 11 of the 12
+/// BLOCK-level false positives in the whole arm, and worsening with time as more
+/// keys age out. It also fabricated recall: 23 of arm B's 32 "true positives"
+/// were this check firing on npm's own security-holding stubs.
+///
+/// An expired key is not evidence of tampering — it means the signature was made
+/// before a rotation, which is the normal state of any package that has not been
+/// republished. `npm audit signatures` does not reject on a rotated key either.
+/// So: verify against the key that **actually signed**, and reserve BLOCK for a
+/// signature that verifies and *fails*.
 pub fn check_signatures(package_name: &str, info: &Value) -> Option<Finding> {
     let version = latest_version(info)?;
     let dist = info.get("versions")?.get(&version)?.get("dist")?;
@@ -95,19 +120,38 @@ pub fn check_signatures(package_name: &str, info: &Value) -> Option<Finding> {
             ));
         }
     };
+
+    verify_against_keys(package_name, &version, integrity, signatures, &keys)
+}
+
+/// The verification core, split out from [`check_signatures`] so the key set can
+/// be injected. `check_signatures` fetches the keys over the network, which makes
+/// the severity ladder — the part that was actually wrong — untestable offline.
+/// Same wrapper-plus-core shape as `report::run_full_registry_with_lists`.
+pub(crate) fn verify_against_keys(
+    package_name: &str,
+    version: &str,
+    integrity: &str,
+    signatures: &[Value],
+    keys: &[Value],
+) -> Option<Finding> {
     let payload = format!("{}@{}:{}", package_name, version, integrity);
 
     for sig_entry in signatures {
         let keyid = sig_entry.get("keyid").and_then(|v| v.as_str()).unwrap_or("");
         let sig_b64 = sig_entry.get("sig").and_then(|v| v.as_str()).unwrap_or("");
 
-        let key = keys.iter().find(|k| {
-            k.get("keyid").and_then(|v| v.as_str()) == Some(keyid) && !key_expired(k)
-        });
+        // Look up the key that ACTUALLY SIGNED this entry, expired or not. The
+        // expiry check deliberately does NOT gate this lookup — see the function
+        // doc comment. Filtering here is what produced the v17 time bomb.
+        let key = keys
+            .iter()
+            .find(|k| k.get("keyid").and_then(|v| v.as_str()) == Some(keyid));
         let key = match key {
             Some(k) => k,
             None => continue,
         };
+        let expired = key_expired(key);
 
         let key_b64 = key.get("key").and_then(|v| v.as_str()).unwrap_or("");
         let der = match base64::engine::general_purpose::STANDARD.decode(key_b64) {
@@ -130,7 +174,21 @@ pub fn check_signatures(package_name: &str, info: &Value) -> Option<Finding> {
         };
 
         return if verifying_key.verify(payload.as_bytes(), &signature).is_ok() {
-            None
+            if expired {
+                // The signature is genuine; the key it was made with has since
+                // been rotated out. Informational, never a verdict.
+                Some(finding(
+                    "INFO",
+                    &format!(
+                        "Registry signature on {}@{} verifies against an expired-but-valid \
+                         signing key ({}) — the package predates a key rotation, which is \
+                         not evidence of tampering",
+                        package_name, version, keyid
+                    ),
+                ))
+            } else {
+                None
+            }
         } else {
             Some(finding(
                 "BLOCK",
@@ -142,10 +200,14 @@ pub fn check_signatures(package_name: &str, info: &Value) -> Option<Finding> {
         };
     }
 
+    // Every signature entry either names a keyid the registry does not publish,
+    // or carries a key/signature we could not decode. That is unverifiable, not
+    // tampered — SUSPECT, not BLOCK.
     Some(finding(
-        "BLOCK",
+        "SUSPECT",
         &format!(
-            "Could not verify registry signature on {}@{} (no valid/unexpired signing key)",
+            "Could not verify registry signature on {}@{} — no published registry key \
+             matches the signature's keyid",
             package_name, version
         ),
     ))
@@ -154,7 +216,129 @@ pub fn check_signatures(package_name: &str, info: &Value) -> Option<Finding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use p256::ecdsa::signature::Signer;
+    use p256::ecdsa::SigningKey;
+    use p256::pkcs8::EncodePublicKey;
     use serde_json::json;
+
+    // ── Pinning tests for the expired-key ladder (v18) ─────────────────────────
+    //
+    // The v17 defect was silent and time-dependent: `check_signatures` filtered
+    // expired keys out of the lookup, never verified anything, and returned an
+    // unconditional BLOCK. Nothing failed — the tool just started blocking more
+    // packages every month. These tests pin the distinction so it cannot regress
+    // back, and they use REAL ECDSA-P256 material so the verification itself is
+    // exercised rather than mocked.
+
+    /// Deterministic (RFC6979) signing key from fixed bytes — no RNG, so the
+    /// whole suite stays byte-reproducible and network-free.
+    fn signing_key() -> SigningKey {
+        SigningKey::from_bytes(&[7u8; 32].into()).expect("valid P-256 scalar")
+    }
+
+    /// The registry's key-set entry shape: `{keyid, keytype, scheme, key, expires}`.
+    fn registry_key(keyid: &str, expires: Value) -> Value {
+        let der = signing_key()
+            .verifying_key()
+            .to_public_key_der()
+            .expect("DER encode");
+        json!({
+            "keyid": keyid,
+            "keytype": "ecdsa-sha2-nistp256",
+            "scheme": "ecdsa-sha2-nistp256",
+            "key": base64::engine::general_purpose::STANDARD.encode(der.as_bytes()),
+            "expires": expires,
+        })
+    }
+
+    /// A signature entry over the registry's canonical `name@version:integrity`.
+    fn signature_entry(keyid: &str, package: &str, version: &str, integrity: &str) -> Value {
+        let payload = format!("{}@{}:{}", package, version, integrity);
+        let sig: p256::ecdsa::Signature = signing_key().sign(payload.as_bytes());
+        json!({
+            "keyid": keyid,
+            "sig": base64::engine::general_purpose::STANDARD.encode(sig.to_der().as_bytes()),
+        })
+    }
+
+    const INTEGRITY: &str = "sha512-deadbeef";
+
+    fn severity_of(f: &Option<Finding>) -> Option<&str> {
+        f.as_ref()?.get("severity")?.as_str()
+    }
+
+    #[test]
+    fn valid_signature_under_unexpired_key_is_clean() {
+        let keys = vec![registry_key("k1", json!(null))];
+        let sigs = vec![signature_entry("k1", "pkg", "1.0.0", INTEGRITY)];
+        let out = verify_against_keys("pkg", "1.0.0", INTEGRITY, &sigs, &keys);
+        assert!(out.is_none(), "expected no finding, got {out:?}");
+    }
+
+    /// THE REGRESSION TEST. npm's old key expired 2025-01-29; every package not
+    /// republished since is still signed with it. That must be INFO, never BLOCK
+    /// — it accounted for 11 of the 12 BLOCK-level false positives in arm F.
+    #[test]
+    fn valid_signature_under_expired_key_is_info_not_block() {
+        let keys = vec![registry_key("k1", json!("2025-01-29T00:00:00.000Z"))];
+        let sigs = vec![signature_entry("k1", "pkg", "1.0.0", INTEGRITY)];
+        let out = verify_against_keys("pkg", "1.0.0", INTEGRITY, &sigs, &keys);
+        assert_eq!(
+            severity_of(&out),
+            Some("INFO"),
+            "a genuine signature made before a key rotation is not tampering; got {out:?}"
+        );
+    }
+
+    /// The signal BLOCK is actually for: the signature does not verify.
+    #[test]
+    fn signature_that_fails_verification_blocks() {
+        let keys = vec![registry_key("k1", json!(null))];
+        // Signed over a DIFFERENT integrity than the one we verify against —
+        // i.e. the tarball changed after signing.
+        let sigs = vec![signature_entry("k1", "pkg", "1.0.0", "sha512-somethingelse")];
+        let out = verify_against_keys("pkg", "1.0.0", INTEGRITY, &sigs, &keys);
+        assert_eq!(severity_of(&out), Some("BLOCK"), "got {out:?}");
+    }
+
+    /// Tampering is still caught when the signing key has ALSO expired — expiry
+    /// must soften the clean path, not the failure path.
+    #[test]
+    fn failed_verification_still_blocks_even_when_key_expired() {
+        let keys = vec![registry_key("k1", json!("2025-01-29T00:00:00.000Z"))];
+        let sigs = vec![signature_entry("k1", "pkg", "1.0.0", "sha512-somethingelse")];
+        let out = verify_against_keys("pkg", "1.0.0", INTEGRITY, &sigs, &keys);
+        assert_eq!(severity_of(&out), Some("BLOCK"), "got {out:?}");
+    }
+
+    /// A keyid the registry does not publish is unverifiable, not tampered.
+    #[test]
+    fn unknown_keyid_is_suspect_not_block() {
+        let keys = vec![registry_key("k1", json!(null))];
+        let sigs = vec![signature_entry("unpublished-keyid", "pkg", "1.0.0", INTEGRITY)];
+        let out = verify_against_keys("pkg", "1.0.0", INTEGRITY, &sigs, &keys);
+        assert_eq!(severity_of(&out), Some("SUSPECT"), "got {out:?}");
+    }
+
+    /// The exact v17 shape: the signing key is expired AND an unexpired
+    /// replacement key exists (npm's rotation). The old behaviour skipped the
+    /// expired key, matched nothing, and BLOCK'd.
+    #[test]
+    fn rotated_key_set_does_not_block_a_package_signed_before_rotation() {
+        let keys = vec![
+            registry_key("old-key", json!("2025-01-29T00:00:00.000Z")),
+            registry_key("new-key", json!(null)),
+        ];
+        let sigs = vec![signature_entry("old-key", "ms", "2.1.3", INTEGRITY)];
+        let out = verify_against_keys("ms", "2.1.3", INTEGRITY, &sigs, &keys);
+        assert_ne!(
+            severity_of(&out),
+            Some("BLOCK"),
+            "this is the v17 time bomb — a package predating npm's key rotation \
+             must not be BLOCK'd; got {out:?}"
+        );
+        assert_eq!(severity_of(&out), Some("INFO"));
+    }
 
     #[test]
     fn unsigned_version_is_suspect() {

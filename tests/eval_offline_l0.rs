@@ -159,14 +159,16 @@ fn dependency_free_claims_are_never_made_in_name_only_mode() {
 }
 
 #[test]
-fn js_suffix_typosquats_are_missed_documenting_a_real_gap() {
-    // `typosquat::bare_name` strips only the `@scope/` prefix, not a `.js` or
-    // `-js` suffix, so `d3.js` sits at Levenshtein distance 3 from `d3` and no
-    // A1 finding fires. Every one of these was a real package in the 2017
-    // campaign, and every one is a false negative today.
+fn js_suffix_typosquats_are_detected_as_suffix_squats() {
+    // WAS a documented gap (v17): `typosquat::bare_name` stripped only the
+    // `@scope/` prefix, so `d3.js` sat at Levenshtein distance 3 from `d3` and no
+    // A1 finding fired. That accounted for 9 of the 21 measured A1 misses.
     //
-    // This test exists to prove the harness SURFACES the gap. It is current
-    // behaviour, not desired behaviour.
+    // v18 folds a trailing `.js`/`-js`/`_js` for the DISTANCE comparison only.
+    // The ordering matters: folding before the exact-match test would make
+    // `jquery.js` compare equal to `jquery` and return INFO, downgrading a real
+    // 2017-campaign typosquat into a note that the package is popular. A name
+    // that matches only after folding is reported as a suffix squat instead.
     for name in [
         "d3.js",
         "jquery.js",
@@ -177,13 +179,48 @@ fn js_suffix_typosquats_are_missed_documenting_a_real_gap() {
         let r = malicious(name);
         assert_eq!(
             r.classification,
-            Classification::FalseNegative,
-            "{} unexpectedly detected — if this is a fix, update the report too",
-            name
+            Classification::TruePositive,
+            "{name} should now be caught as a suffix squat"
         );
-        assert_eq!(r.missed_expected, vec!["A1"]);
-        assert!(r.detected_vectors.is_empty());
+        assert_eq!(r.detected_vectors, vec!["A1"], "{name}");
+        assert!(r.missed_expected.is_empty(), "{name}");
+        assert_eq!(r.verdict, Some(Verdict::Block), "{name}");
+
+        let f = &r.layers[0].findings[0];
+        assert_eq!(f["distance"].as_u64(), Some(0), "{name}");
+        assert!(
+            f["message"].as_str().is_some_and(|m| m.contains("Suffix squat")),
+            "{name}: {f:?}"
+        );
     }
+}
+
+#[test]
+fn a_genuine_package_is_not_turned_into_a_suffix_squat() {
+    // The counterpart FP control for the rule above: the real package must keep
+    // its INFO-only exact match and must not be dragged into a BLOCK.
+    let r = benign("jquery");
+    assert_eq!(r.verdict, Some(Verdict::Pass));
+    assert_eq!(r.classification, Classification::TrueNegative);
+    assert_eq!(
+        r.layers[0].findings[0]["severity"].as_str(),
+        Some("INFO"),
+        "an exact match is INFO, never a squat"
+    );
+}
+
+#[test]
+fn a_short_name_two_edits_away_is_no_longer_accused() {
+    // v17 measured `smb`→`pm2` as an accidental "hit" — two edits on a 3-char
+    // name is coincidence, not a typo, and it inflated the honest A1 count from
+    // 7/30 to 9/30. The distance-2 branch now carries the same length guard the
+    // distance-1 branch always had.
+    let r = scan("name\tsmb\treal_malicious\tmalicious\tA1\t0");
+    assert!(
+        r.layers[0].findings.is_empty(),
+        "expected no A1 accusation on a 3-char name; got {:?}",
+        r.layers[0].findings
+    );
 }
 
 #[test]
@@ -243,8 +280,8 @@ fn a_small_arm_a_style_sweep_produces_coherent_metrics() {
         malicious("expres"),   // TP
         malicious("mongose"),  // TP
         malicious("lodahs"),   // TP
-        malicious("d3.js"),    // FN (suffix gap)
-        malicious("ffmepg"),   // FN (parent absent)
+        malicious("d3.js"),    // TP since v18 — suffix squat (was FN)
+        malicious("ffmepg"),   // FN — parent absent from THIS test's list
         benign("express"),     // TN
         benign("lodash"),      // TN
         benign("d3"),          // TN
@@ -252,19 +289,19 @@ fn a_small_arm_a_style_sweep_produces_coherent_metrics() {
 
     let m = compute(&records, provenance());
     assert_eq!(m.record_count, 8);
-    assert_eq!(m.overall.true_positive, 3);
-    assert_eq!(m.overall.false_negative, 2);
+    assert_eq!(m.overall.true_positive, 4);
+    assert_eq!(m.overall.false_negative, 1);
     assert_eq!(m.overall.true_negative, 3);
     assert_eq!(
         m.overall.false_positive, 0,
         "no legitimate parent may be flagged"
     );
-    assert_eq!(m.overall_rates.recall, Some(0.6));
+    assert_eq!(m.overall_rates.recall, Some(0.8));
     assert_eq!(m.overall_rates.fpr, Some(0.0));
 
     // Layer 0 did all the work, so it is the sole detector for every hit.
     assert_eq!(m.by_layer[0].ran, 8);
-    assert_eq!(m.by_layer[0].sole_detector, 3);
+    assert_eq!(m.by_layer[0].sole_detector, 4);
     assert_eq!(m.by_layer[0].false_hits, 0);
     for i in 1..4 {
         assert_eq!(m.by_layer[i].ran, 0);
@@ -274,8 +311,8 @@ fn a_small_arm_a_style_sweep_produces_coherent_metrics() {
     // Per-vector A1 recall matches the overall figure here, since A1 is the only
     // declared vector.
     let a1 = m.by_vector.iter().find(|v| v.vector == "A1").unwrap();
-    assert_eq!((a1.expected, a1.detected, a1.missed), (5, 3, 2));
-    assert_eq!(a1.recall, Some(0.6));
+    assert_eq!((a1.expected, a1.detected, a1.missed), (5, 4, 1));
+    assert_eq!(a1.recall, Some(0.8));
     assert_eq!(a1.false_hits, 0);
 }
 

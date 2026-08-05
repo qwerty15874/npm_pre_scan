@@ -101,17 +101,56 @@ fn fold_confusables(name: &str) -> String {
         .collect()
 }
 
+/// Suffixes an attacker appends to an otherwise-exact package name so the result
+/// still reads as the real thing (`jquery.js`, `fabric-js`, `nodemailer_js`).
+///
+/// Folded away for the DISTANCE comparison only — never for the exact-match test.
+/// See `strip_js_suffix` and `check_typosquat` for why that distinction matters.
+const JS_SUFFIXES: &[&str] = &[".js", "-js", "_js"];
+
+/// Strip one trailing JS-ish suffix, if present.
+///
+/// Deliberately applied AFTER the exact-match check in `check_typosquat`, never
+/// before. Folding first would make `jquery.js` compare equal to `jquery`, hit
+/// the exact-match branch, and return **INFO** — downgrading a real typosquat
+/// (`jquery.js` was part of the hand-labelled 2017 campaign) into an explicit
+/// note that the package is a known-popular one. That is worse than the miss it
+/// was meant to fix.
+fn strip_js_suffix(name: &str) -> Option<&str> {
+    JS_SUFFIXES
+        .iter()
+        .find_map(|s| name.strip_suffix(s))
+        .filter(|stripped| !stripped.is_empty())
+}
+
 /// Check if `name` is a typosquat of any popular package.
 /// Returns a Finding map or `None` if the package looks clean.
+///
+/// ## Suffix squats (v18)
+///
+/// `bare_name` strips only the scope, so `jquery.js` sat at Levenshtein distance
+/// 3 from `jquery` and never tripped the ≤2 threshold. That accounted for 9 of
+/// the 21 measured A1 misses in v17 (`cross-env.js`, `fabric-js`,
+/// `http-proxy.js`, `jquery.js`, `mssql.js`, `nodemailer-js`, `nodemailer.js`,
+/// `proxy.js`, `sqlite.js`). A trailing `.js`/`-js`/`_js` is now folded before
+/// the distance compare, and a name that becomes an *exact* match only after
+/// folding is reported as a suffix squat — a BLOCK, not the INFO the plain
+/// exact-match branch would have given it.
 pub fn check_typosquat(name: &str, top_packages: &[String]) -> Option<Map<String, Value>> {
     let bare = fold_confusables(bare_name(name));
     let bare = bare.as_str();
+    // `None` when the name carries no JS-ish suffix; `Some` otherwise. Only the
+    // distance path consults it.
+    let defanged = strip_js_suffix(bare);
 
     let mut closest_pkg: Option<&str> = None;
     let mut min_dist = usize::MAX;
+    // Set when the *suffix-stripped* name matches a popular package exactly.
+    let mut suffix_squat_of: Option<&str> = None;
 
     for pkg in top_packages {
         let bare_pkg = bare_name(pkg);
+        // Exact-match test uses the UNFOLDED name — see strip_js_suffix.
         if bare == bare_pkg {
             // Exact match with known popular package — INFO only
             let mut f = Map::new();
@@ -128,11 +167,47 @@ pub fn check_typosquat(name: &str, top_packages: &[String]) -> Option<Map<String
             );
             return Some(f);
         }
-        let dist = levenshtein(bare, bare_pkg);
+
+        if defanged.is_some_and(|d| d == bare_pkg) {
+            suffix_squat_of = Some(pkg.as_str());
+            break;
+        }
+
+        // Distance is the MINIMUM over both forms — the name as written and the
+        // suffix-stripped form. Taking only the stripped form would be a
+        // regression: 17 entries in the top list themselves end in `.js`/`-js`
+        // (`discord.js`, `crypto-js`, `highlight.js`, `uglify-js`, …), so
+        // comparing `dezcord.js` as `dezcord` puts it at distance 3 from
+        // `discord.js` instead of 2, and a genuine typosquat stops being
+        // detected. Measured: 8 such names dropped out of arm A before this was
+        // a `min`.
+        let dist = match defanged {
+            Some(d) => levenshtein(bare, bare_pkg).min(levenshtein(d, bare_pkg)),
+            None => levenshtein(bare, bare_pkg),
+        };
         if dist < min_dist {
             min_dist = dist;
             closest_pkg = Some(pkg.as_str());
         }
+    }
+
+    // Exact match only AFTER stripping a JS-ish suffix: a suffix squat. This is a
+    // deliberate impersonation of a specific package, so it is the strongest A1
+    // signal there is — stronger than a distance-1 typo, which can be accidental.
+    if let Some(pkg) = suffix_squat_of {
+        let mut f = Map::new();
+        f.insert("severity".into(), Value::String("BLOCK".into()));
+        f.insert("vector".into(), Value::String("A1".into()));
+        f.insert("closest".into(), Value::String(pkg.to_string()));
+        f.insert("distance".into(), Value::Number(0.into()));
+        f.insert(
+            "message".into(),
+            Value::String(format!(
+                "Suffix squat of '{}' — identical name with a '.js'/'-js'/'_js' suffix appended",
+                pkg
+            )),
+        );
+        return Some(f);
     }
 
     let pkg = closest_pkg?;
@@ -171,6 +246,15 @@ pub fn check_typosquat(name: &str, top_packages: &[String]) -> Option<Map<String
             Some(f)
         }
         2 => {
+            // Length guard, mirroring the distance-1 branch above. Without it,
+            // a 3-character name is within distance 2 of a large slice of the
+            // top list purely by chance: v17 measured `smb`→`pm2` and
+            // `d3.js`→`dayjs` as accidental "hits", which is why the honest A1
+            // count was 7/30 rather than 9/30. Two edits on a short name is
+            // coincidence; on a long one it is a typo.
+            if bare.len() < 5 {
+                return None;
+            }
             f.insert("severity".into(), Value::String("SUSPECT".into()));
             f.insert(
                 "message".into(),
@@ -245,6 +329,149 @@ mod tests {
         assert_eq!(sev(&f), "BLOCK");
         assert_eq!(f.get("distance").unwrap().as_u64(), Some(1));
         assert_eq!(f.get("vector").and_then(|v| v.as_str()), Some("A1"));
+    }
+
+    // ── Suffix squats (v18) ────────────────────────────────────────────────────
+
+    #[test]
+    fn js_suffix_squat_blocks() {
+        for name in ["express.js", "express-js", "express_js"] {
+            let f = check_typosquat(name, &top())
+                .unwrap_or_else(|| panic!("{name} should be flagged"));
+            assert_eq!(sev(&f), "BLOCK", "{name}: {f:?}");
+            assert_eq!(f.get("closest").and_then(|v| v.as_str()), Some("express"));
+            assert!(
+                f.get("message")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|m| m.contains("Suffix squat")),
+                "{name}: {f:?}"
+            );
+        }
+    }
+
+    /// THE ORDERING TEST. Folding the suffix before the exact-match check would
+    /// make `express.js` compare equal to `express` and return INFO — turning a
+    /// real 2017-campaign typosquat into a note saying the package is popular.
+    /// The suffix fold must feed the distance path only.
+    #[test]
+    fn suffix_squat_is_not_downgraded_to_info() {
+        let f = check_typosquat("express.js", &top()).unwrap();
+        assert_ne!(
+            sev(&f),
+            "INFO",
+            "a suffix squat must never be reported as an exact match: {f:?}"
+        );
+    }
+
+    /// The real package keeps its INFO — the fold must not fire on a name that
+    /// already matches exactly.
+    #[test]
+    fn genuine_package_still_info_after_suffix_rule() {
+        let f = check_typosquat("express", &top()).unwrap();
+        assert_eq!(sev(&f), "INFO");
+    }
+
+    /// A bare suffix with nothing in front is not a squat of anything.
+    #[test]
+    fn suffix_only_name_is_not_a_squat() {
+        assert!(strip_js_suffix(".js").is_none());
+        assert!(strip_js_suffix("-js").is_none());
+    }
+
+    /// A name that merely ends in `.js` but is not otherwise a popular package
+    /// must not be dragged into a BLOCK.
+    #[test]
+    fn unrelated_dot_js_name_is_clean() {
+        assert!(check_typosquat("some-unrelated-thing.js", &top()).is_none());
+    }
+
+    /// REGRESSION. 17 entries in `data/top_packages.txt` themselves end in
+    /// `.js`/`-js` (`discord.js`, `crypto-js`, `highlight.js`, `uglify-js`, …).
+    /// An early v18 draft compared ONLY the suffix-stripped form, which pushed
+    /// `dezcord.js` from distance 2 to distance 3 against `discord.js` and lost
+    /// the detection — 8 real names dropped out of arm A. The distance must be
+    /// the minimum over both the written and the stripped form.
+    #[test]
+    fn typo_of_a_js_suffixed_top_package_is_still_caught() {
+        let list: Vec<String> = ["discord.js", "crypto-js"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(levenshtein("dezcord.js", "discord.js"), 2, "precondition");
+
+        let f = check_typosquat("dezcord.js", &list)
+            .expect("a distance-2 typo of discord.js must still be flagged");
+        assert_eq!(sev(&f), "SUSPECT", "{f:?}");
+        assert_eq!(f.get("closest").and_then(|v| v.as_str()), Some("discord.js"));
+        assert_eq!(f.get("distance").unwrap().as_u64(), Some(2));
+    }
+
+    /// The stripped form must still be consulted — it is the whole point of the
+    /// rule. `crypto-js` is in the list; `cryptojs` is one edit from its stripped
+    /// form `crypto` only via the written form, so check a clean suffix squat.
+    #[test]
+    fn min_over_both_forms_keeps_the_suffix_squat_path() {
+        let list: Vec<String> = ["crypto", "discord.js"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let f = check_typosquat("crypto-js", &list).expect("suffix squat of crypto");
+        assert_eq!(sev(&f), "BLOCK");
+        assert_eq!(f.get("closest").and_then(|v| v.as_str()), Some("crypto"));
+    }
+
+    // ── Distance-2 length guard (v18) ──────────────────────────────────────────
+
+    /// v17 measured `smb`→`pm2` (distance 2, 3 chars) as an accidental "hit".
+    /// Two edits on a 3-character name is coincidence, not a typo.
+    #[test]
+    fn short_distance_two_is_not_accused() {
+        let list: Vec<String> = ["pm2"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(levenshtein("smb", "pm2"), 2, "precondition");
+        assert!(
+            check_typosquat("smb", &list).is_none(),
+            "a 3-char name at distance 2 is coincidence"
+        );
+    }
+
+    /// The guard must not silence genuine distance-2 typos on longer names.
+    #[test]
+    fn long_distance_two_still_suspect() {
+        assert_eq!(levenshtein("lodashxy", "lodash"), 2, "precondition");
+        let f = check_typosquat("lodashxy", &top()).unwrap();
+        assert_eq!(sev(&f), "SUSPECT", "{f:?}");
+        assert_eq!(f.get("distance").unwrap().as_u64(), Some(2));
+    }
+
+    // ── The five v18 "absent parent" additions ─────────────────────────────────
+
+    /// `sqlite` is a real package that used to BLOCK itself: distance 1 from
+    /// `sqlite3`. As a list member it is now an exact match. This fixes the FP in
+    /// name-only mode too, which the registry-side establishment guard cannot.
+    #[test]
+    fn added_parents_are_present_and_sqlite_no_longer_self_blocks() {
+        let pkgs = load_top_packages();
+        for p in ["ffmpeg", "fabric", "shadowsocks", "tkinter", "sqlite"] {
+            assert!(pkgs.iter().any(|x| x == p), "{p} missing from top_packages.txt");
+        }
+        let f = check_typosquat("sqlite", &pkgs).unwrap();
+        assert_eq!(sev(&f), "INFO", "sqlite must not accuse itself: {f:?}");
+    }
+
+    /// With the parent present, the campaign name is reachable at all — it scored
+    /// nothing before, because `ffmpeg` was not in the list for it to be near.
+    ///
+    /// SUSPECT rather than BLOCK is correct: `ffmepg` is a transposition, which
+    /// Levenshtein scores as 2 (one delete + one insert), not 1. SUSPECT still
+    /// counts as a detection in the eval harness — only INFO does not.
+    #[test]
+    fn absent_parent_names_are_now_detected() {
+        let pkgs = load_top_packages();
+        let f = check_typosquat("ffmepg", &pkgs)
+            .expect("ffmepg should now reach its parent");
+        assert_eq!(sev(&f), "SUSPECT", "{f:?}");
+        assert_eq!(f.get("closest").and_then(|v| v.as_str()), Some("ffmpeg"));
+        assert_eq!(f.get("distance").unwrap().as_u64(), Some(2));
     }
 
     #[test]

@@ -11,6 +11,7 @@ and the machinery for those numbers.
 eval/
   corpus/       ground-truth manifests (TSV, checked in)
   runs/         per-run output data (gitignored)
+  baseline/     committed metrics snapshots to diff fixes against (checked in)
   samples/      downloaded malware samples, encrypted at rest (gitignored)
   REPORT.md     experiment write-up (produced by the run)
 ```
@@ -23,6 +24,37 @@ npm-pre-scan --eval eval/corpus/dummies.tsv --out-dir eval/runs/<name>
 
 `--eval` is repeatable, so several manifests can share one output directory and one metrics
 summary.
+
+---
+
+## Baselines — a fix must report before/after
+
+`eval/runs/` is gitignored, so a run's output disappears the moment the next one overwrites it and
+there is nothing to diff a change against. `eval/baseline/v17/arm{A..F}.metrics.json` is a committed
+snapshot of the six v17 `metrics.json` files, taken before any of the ranked weaknesses in
+`REPORT.md` were addressed. They are small, contain no malware, and name no package beyond the
+corpora already tracked here.
+
+**Any change that touches detection logic must report its metrics before and after against this
+baseline.** Nine ranked fixes are queued and each will move the numbers; without a fixed reference
+point their effects cannot be separated, and a regression in one arm can hide behind an improvement
+in another. Expect some fixes to *lower* a headline figure on purpose — see the acceptance criteria
+under fix-queue item 1 in `CLAUDE.md`, where recall is supposed to fall from 91.4% to about 25.7%.
+
+Snapshot a new baseline (`v19/`, …) only when a fix has landed and its before/after is recorded;
+never overwrite an existing one.
+
+**`eval/baseline/v18/` (2026-08-04)** holds arms **A, B, C and F** after the first fix pass (queue
+items 0, 1, 2, 3, 5, 6). Arms D and E are absent by design — they are Layer-1-on-malware arms that
+pass could only move via item 3, and they were not re-run; use `v17/` for those and treat item 3's
+effect on real-malware recall as unmeasured. The v18 write-up is in `REPORT.md`, section
+"v18 — first fix pass".
+
+⚠ **A fix landing correctly can make a headline number look worse, and that is not a regression.**
+v18's `signatures` fix was expected to drop arm B's recall from 91.4% to about 25.7%, because the
+91.4% was the check firing on npm's own takedown stubs rather than detecting anything. Read a
+before/after alongside the *mechanism*: arm B's recall landed at 85.7%, but the figure that matters
+is that all 18 true positives now come from name detection rather than from a signature artefact.
 
 ---
 
@@ -68,7 +100,8 @@ kind  id  group  label  vectors  layers  [note]
   recorded `skipped_missing` and excluded from every denominator, so the other groups stay
   runnable on a fresh clone where the gitignored `dummy_packages/` does not exist.
 - `holder` — a name npm replaced with a *security holding* stub. A content-layer PASS is
-  classified `ARTIFACT_FN`, never `FN` (see below).
+  classified `ARTIFACT_FN`, never `FN` (see below). ⚠ **Inert as of the v17 run** — see the
+  `ARTIFACT_FN` note below.
 - `sample` — a DataDog sample zip path.
 
 `holder` and `sample` are **manifest annotations, not runtime inferences.** Deriving ground truth
@@ -113,6 +146,16 @@ console.log('this package is no longer dangerous');
 So scanning them yields a truthful PASS on harmless content. That is an artefact of the takedown,
 not a detection failure, which is why the harness classifies it `ARTIFACT_FN` and keeps it out of
 recall's denominator. Real payloads therefore come from the DataDog corpus.
+
+⚠ **`ARTIFACT_FN` is a currently-inert safeguard: it has never fired.** `overall.artifact_fn = 0`
+in all six v17 arms. The only arm carrying `holder` entries is arm B, and there the content layers
+never ran on them — `by_layer[1]: ran 27, skipped 38`, where the 27 are the benign parents and all
+38 malicious holders were Layer 0 only. A `holder` entry can only be classified `ARTIFACT_FN` if a
+content layer returns a clean verdict on it, so the classification was never assigned even once.
+
+The mechanism is not wrong, and the reasoning above still holds. It is **untested by this run**, so
+do not cite it as validated. Exercising it needs an arm that runs Layer 1 over the `holder` entries
+(`--eval-mode full` on `real_malicious_holders.tsv`), which no v17 arm did.
 
 ### Why `vectors` is often `-`
 
