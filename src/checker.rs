@@ -3,26 +3,11 @@ use serde_json::{Map, Value};
 use crate::age_check::check_age_and_downloads;
 use crate::combosquat::check_combosquat;
 use crate::maintainer::check_maintainer_change;
-use crate::models::{score_findings, CheckResult, Finding, Verdict};
+use crate::models::{score_findings, verdict_from_findings, CheckResult, Finding};
 use crate::namespace::check_namespace_conflict;
 use crate::registry::get_package_info;
 use crate::typosquat::check_typosquat;
 
-/// Aggregate a verdict from all findings.
-/// BLOCK if any finding has severity BLOCK; SUSPECT if any SUSPECT (no BLOCK); else PASS.
-fn aggregate_verdict(findings: &[Finding]) -> Verdict {
-    for f in findings {
-        if f.get("severity").and_then(|v| v.as_str()) == Some("BLOCK") {
-            return Verdict::Block;
-        }
-    }
-    for f in findings {
-        if f.get("severity").and_then(|v| v.as_str()) == Some("SUSPECT") {
-            return Verdict::Suspect;
-        }
-    }
-    Verdict::Pass
-}
 
 /// Inject the `check` key into a raw finding map and push it onto findings.
 fn push_finding(findings: &mut Vec<Finding>, check_name: &str, mut raw: Map<String, Value>) {
@@ -80,7 +65,7 @@ pub fn run_layer0_name_only(
     let findings = name_findings(package_name, top_packages, top_scoped);
     CheckResult {
         package: package_name.to_string(),
-        verdict: aggregate_verdict(&findings),
+        verdict: verdict_from_findings(&findings),
         score: score_findings(&findings),
         findings,
         note: Some("Name-only mode; registry-based checks not attempted".to_string()),
@@ -200,7 +185,7 @@ pub fn run_layer0(
     // Fetch registry metadata for remaining checks
     let info = match get_package_info(package_name) {
         None => {
-            let verdict = aggregate_verdict(&findings);
+            let verdict = verdict_from_findings(&findings);
             let score = score_findings(&findings);
             return CheckResult {
                 package: package_name.to_string(),
@@ -235,7 +220,7 @@ pub fn run_layer0(
         push_finding(&mut findings, "signatures", raw);
     }
 
-    let verdict = aggregate_verdict(&findings);
+    let verdict = verdict_from_findings(&findings);
     let score = score_findings(&findings);
     CheckResult {
         package: package_name.to_string(),
@@ -249,6 +234,7 @@ pub fn run_layer0(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::Verdict;
 
     // Small hand-built lists so these tests never touch data/*.txt and stay
     // independent of that file's contents.
@@ -332,10 +318,10 @@ mod tests {
             f.insert("severity".into(), Value::String(sev.into()));
             f
         };
-        assert_eq!(aggregate_verdict(&[mk("SUSPECT"), mk("BLOCK")]), Verdict::Block);
-        assert_eq!(aggregate_verdict(&[mk("INFO"), mk("SUSPECT")]), Verdict::Suspect);
-        assert_eq!(aggregate_verdict(&[mk("INFO")]), Verdict::Pass);
-        assert_eq!(aggregate_verdict(&[]), Verdict::Pass);
+        assert_eq!(verdict_from_findings(&[mk("SUSPECT"), mk("BLOCK")]), Verdict::Block);
+        assert_eq!(verdict_from_findings(&[mk("INFO"), mk("SUSPECT")]), Verdict::Suspect);
+        assert_eq!(verdict_from_findings(&[mk("INFO")]), Verdict::Pass);
+        assert_eq!(verdict_from_findings(&[]), Verdict::Pass);
     }
 
     // ── Established-package guard (v18) ────────────────────────────────────────

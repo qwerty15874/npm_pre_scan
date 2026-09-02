@@ -23,8 +23,8 @@ Out of scope: VCS/CI/build-system compromise (not detectable by a package scanne
     Layer 3  Dynamic — condition mut [DONE]   live Docker verified (libfaketime, env spoof, API fuzz)
     Scoring  Aggregate risk score    [DONE]   cross-layer weighted noisy-OR
     Eval     Batch harness + corpus  [DONE]   --eval; 6 arms measured (v17)
-    Precision Verdict calibration    [PART]   v18: BLOCK-level FPs 12/27 -> 0/27;
-                                              SUSPECT-level noise still open
+    Precision Verdict calibration    [PART]   v19: BLOCK 0/27; any-finding FPR
+                                              70.4% -> 48.1%. Ceiling is coverage.
 
 All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-verified.
 
@@ -33,10 +33,15 @@ All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-ve
   check on the benign corpus. The real Sept-2025 crypto clipper (ansi-styles@6.2.2),
   which used to pass all four layers, is now caught.
 
-⚠ Do not cite an FPR without reading EVALUATION. 19 of 27 legitimate packages still
-  collect at least one SUSPECT finding (any-finding FPR 70.4%, down from 96.3%). That
-  is static-heuristic noise, not a blocking verdict — but it is not clean, and the
-  recalibration that fixes it is not done.
+✅ v19 nearly halved what was left, at no recall cost. 14 of 27 legitimate packages are
+  now completely clean (was 8); any-finding FPR 70.4% -> 48.1%. Four rules that measured
+  as non-discriminating — two of them INVERTED, firing more on legitimate packages than
+  on malware — became capabilities: informational alone, accusing only when >=3 co-occur.
+
+⚠ Do not cite an FPR without reading EVALUATION. 13 of 27 legitimate packages still
+  collect at least one SUSPECT. They genuinely have the capability (axios imports http,
+  node-sass runs a postinstall) — telling "has" from "abuses" needs dynamic evidence,
+  and the dynamic layers reach only 11 of 27. That is a coverage limit, not calibration.
 
 
 -------------------------------------------------------------------------------
@@ -55,7 +60,7 @@ All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-ve
 
  NO VECTOR NOW PRODUCES A BLOCK-LEVEL FALSE POSITIVE. Every FP below is SUSPECT-level.
 
- ID  Attack vector                    Layer    Implemented                          fires (all arms) / FP (arm F, v18)
+ ID  Attack vector                    Layer    Implemented                          fires (all arms) / FP (arm F, v19)
  --  -------------------------------- ------   -----------------------------------  --------------------------
  A1  Typosquatting                    0        BLOCK (edit_dist ≤1; suffix squat;   OK 0 FP (was 1, sqlite).
                                                homoglyph-fold)                         Arm B name recall 25.7%
@@ -63,20 +68,22 @@ All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-ve
                                                                                       + absent parents, v18)
  A2  Dependency Confusion             0        BLOCK (unscoped vs scoped namespace) OK 0 FP (was 1, babel-cli);
                                                                                       no real TP observed
- A3  Account Hijacking                0        SUSPECT (maintainer change)          X 8 fires / 3 FP (mongoose,
-                                                                                      mssql, react) — zero true
-                                                                                      positives. STILL OPEN
+ A3  Account Hijacking                0        CAPABILITY (maintainer change)       OK 0 FP (was 3). v19: zero
+                                                                                      true positives across every
+                                                                                      arm ever run -> capability
  A4  Combosquatting                   0        SUSPECT (token + suspicious affix)   OK 410 fires / 0 FP
- B1  Install-time script              1+2      L1 SUSPECT + L2 live BLOCK           OK 359 fires / ! 5 FP (axios,
-                                                                                      bcrypt, fabric, node-sass,
-                                                                                      sqlite3). Item 4
- B2  Obfuscation (eval+base64, hex,   1        BLOCK (eval+Buffer.from; >=25        ! 392 fires / 18 of 27 legit
-     hex-identifier density)                   distinct _0x identifiers)               packages (67%). Item 4.
-                                                                                      v18 CLOSED the obfuscator.io
-                                                                                      gap: ansi-styles@6.2.2 now
-                                                                                      BLOCKs (was a clean PASS)
+ B1  Install-time script              1+2      L1: exec-shape cmd BLOCK /           OK 359 fires / ! 1 FP
+                                               pre+postinstall SUSPECT /               (node-sass). v19 hook+body
+                                               install+prepare CAPABILITY.             split; arm D BLOCK-level
+                                               L2 live BLOCK                           recall 21.6% -> 35.1%
+ B2  Obfuscation (eval+base64, hex,   1        BLOCK (eval+Buffer.from; >=25        ! 392 fires / 9 of 27 legit
+     hex-identifier density)                   distinct _0x identifiers).              packages (was 18). v18 closed
+                                               long-base64 -> CAPABILITY (v19)         the obfuscator.io gap:
+                                                                                      ansi-styles@6.2.2 now BLOCKs
+                                                                                      (was a clean PASS)
  B3  Malicious version update         1        BLOCK (newly-introduced eval/diff)   X 2 fires / 1 FP (bcrypt) —
-                                                                                      no true positive. Item 4
+                                                                                      no true positive; too few
+                                                                                      observations to calibrate
  C1  Import-time execution            2        live BLOCK (import side effects)     OK 25 fires / 0 FP
  C2  Slow exfiltration (DNS tunnel)   2        live BLOCK (encoded labels)          OK 10 fires / 0 FP
  C3  Hidden binary (.node addon)      2        live SUSPECT (native addon open)     - dummy only, no real sample
@@ -132,8 +139,13 @@ Runs on registry metadata only; nothing is downloaded or executed.
                   (minimum 1000/wk).                                    → SUSPECT  (vector META)
 
   maintainer      New maintainer(s) in the latest version relative to the first
-                  version, when the latest version shipped <30 days ago. → SUSPECT
+                  version, when the latest version shipped <30 days ago. → CAPABILITY
                   (30-day window trades slow-hijack recall for lower FPs.)
+                  (v19: A3 has produced ZERO true positives across every
+                   evaluation arm ever run, against 3 false positives on 27
+                   legitimate packages. Ownership transfers and co-maintainer
+                   additions are ordinary. It stays visible and still counts
+                   toward a capability cluster; it no longer accuses alone.)
 
   signatures      Verifies the npm registry's ECDSA-P256 signature on the latest
                   version (equivalent to `npm audit signatures`).       (vector META)
@@ -159,9 +171,9 @@ Runs on registry metadata only; nothing is downloaded or executed.
                   BLOCK-level false positives on the benign corpus went 14 → 0
                   in arm B. See eval/REPORT.md #1.
 
-  ⚠ A3 `maintainer` still fires on legitimate packages far more than on
-    malicious ones (4 of 27 legit, zero true positives across all six v17 arms).
-    Treat a verdict driven solely by an A3 finding as unreliable. Not yet fixed.
+  ✅ A3 `maintainer` fired on legitimate packages far more than on malicious ones
+    (4 of 27 legit, zero true positives across all six v17 arms) — FIXED in v19 by
+    moving it to the capability tier. It can no longer drive a verdict alone.
 
 
 -------------------------------------------------------------------------------
@@ -170,9 +182,18 @@ Runs on registry metadata only; nothing is downloaded or executed.
 Downloads and unpacks the package tarball (or reads a local directory);
 recursively scans all .js / .cjs / .mjs / .ts / .tsx / .jsx files. No execution.
 
-  install_script     preinstall / install / postinstall / prepare present  → SUSPECT
+  install_script     command fetches/executes (curl, |sh, node -e, URL,
+                       base64 -d, child_process)                            → BLOCK
+                     preinstall / postinstall, ordinary command             → SUSPECT
+                     install / prepare, or a recognised build step
+                       (node-gyp, prebuild-install, husky, tsc, make)      → CAPABILITY
                      (test/prepack/prepublishOnly are out of scope — not run
                       at consumer install time.)
+                     (v19: measured — preinstall appears 169x in malware and
+                      0x in the 27 legitimate packages; an exec/exfil command
+                      shape appears in 79 malicious packages and 0 benign.
+                      `node <file>` is NOT an exec shape: node-sass ships
+                      "postinstall": "node scripts/build.js".)
 
   obfuscation        eval(Buffer.from(...,'base64'))                        → BLOCK
                      atob(...) whose file also has eval() or a Function("…")
@@ -209,7 +230,11 @@ recursively scans all .js / .cjs / .mjs / .ts / .tsx / .jsx files. No execution.
                      systematic split-string obfuscation ('ht'+'tp', ≥3 in a file) → SUSPECT
 
   suspicious_strings /etc/passwd, /etc/shadow, ~/.ssh                       → BLOCK
-                     process.env, os.homedir()                             → SUSPECT
+                     os.homedir(), incl. require('os').homedir()           → SUSPECT
+                     process.env                                          → CAPABILITY
+                     (v19: process.env is INVERTED — 36.3% of real malware
+                      vs 44.4% of legitimate packages. os.homedir() is
+                      14.4% vs 0.0%. Same check, opposite evidence.)
 
   network_imports    require/import of axios, node-fetch, cross-fetch, got,
                      superagent, request, ws, socket.io, http(s)-proxy-agent,
@@ -220,7 +245,9 @@ recursively scans all .js / .cjs / .mjs / .ts / .tsx / .jsx files. No execution.
   capability_notes   worker_threads import, *.wasm reference                → INFO
                      (low-weight capability surface — common in benign code)
 
-  dynamic_require    require(<variable>) — non-literal argument             → SUSPECT
+  dynamic_require    require(<variable>) — non-literal argument           → CAPABILITY
+                     (v19: INVERTED — 7.6% of real malware vs 14.8% of
+                      legitimate packages. A bundler emits this by construction.)
 
   version_diff       Diffs previous vs latest published tarball; new lines only:
                        eval(Buffer.from) / sensitive path                  → BLOCK
@@ -250,6 +277,15 @@ recursively scans all .js / .cjs / .mjs / .ts / .tsx / .jsx files. No execution.
                      still BLOCKs via two categories plus its IOC.
 
 Per-layer scoring:  BLOCK=50, SUSPECT=15, INFO=2; weighted sum capped at 100.
+
+CAPABILITY TIER (v19). A rule measured as non-discriminating emits INFO with a
+`capability` tag instead of accusing. Reading process.env is what configuration IS;
+a bundler emits require(variable) by construction. But capabilities are not
+independent: a package that reads the environment AND resolves modules dynamically
+AND ships an encoded blob is a different proposition from one that does any single
+one of those. A package carrying >=3 DISTINCT capabilities gets a `capability_cluster`
+SUSPECT finding (vector META). Distinct ids, not findings — obfuscation and
+suspicious_strings emit one finding per file.
 
 
 -------------------------------------------------------------------------------
@@ -611,6 +647,31 @@ and safety notes in eval/README.md; results and a ranked fix list in eval/REPORT
       which needs a paired prev/latest manifest kind. Only 9 of the 16 reach BLOCK
       (overall_block_only.recall = 0.5625).
 
+  ── v19 FIX PASS (2026-08-10) — items 4,10 done; 7,8,9 open ──
+  All six arms re-run against eval/baseline/v18/; snapshot in eval/baseline/v19/.
+
+      arm   recall v18 -> v19      any-finding FPR      BLOCK-level FPR
+      ---   ------------------     -----------------    ---------------
+      A         1.3% ->  1.3%       3.7% ->  3.7%        3.7%
+      B        85.7% -> 85.7%      66.7% -> 46.7%        0.0%
+      C     16/16 pkgs, unchanged    0.0% ->  0.0%        0.0%
+      D        88.8% -> 87.6%        (no benign control)  floor 86.8% HELD
+      E        97.5% -> 97.5%        (no benign control)  floor 95.5% HELD
+      F              —              70.4% -> 48.1%        0.0%
+
+  ✅ Four non-discriminating rules became CAPABILITIES (INFO alone, escalate at >=3):
+     process.env (36.3% malicious vs 44.4% benign — INVERTED), dynamic_require (7.6%
+     vs 14.8% — INVERTED), long-base64 (lift 1.16), and maintainer/A3 (zero true
+     positives across every arm ever run).
+  ✅ install_script now reads the hook NAME and its COMMAND, not just key presence.
+     preinstall appears 169x in malware and 0x in the 27 legitimate packages; an
+     exec/exfil command shape appears in 79 malicious packages and 0 benign ones.
+     Arm D BLOCK-level recall rose 21.6% -> 35.1%.
+  ✅ Zero recall lost on arm E: the one package the demotions cost (naniod, a real
+     nanoid typosquat) turned out to expose a rule GAP — it calls
+     require('os').homedir(), which the bare os.homedir() pattern missed. os.homedir
+     is 14.4% malicious vs 0.0% benign, so widening it was free.
+
   ── v18 FIX PASS (2026-08-04) — items 0,1,2,3,5,6 done; 4,7,8,9,10 open ──
   Arms A, B, C, F re-run against eval/baseline/v17/; new snapshot in eval/baseline/v18/.
   D and E not re-run (Layer-1-on-malware; unaffected except via item 3).
@@ -638,10 +699,10 @@ and safety notes in eval/README.md; results and a ranked fix list in eval/REPORT
   ✅ dummy_timebomb's 2026-09-01 expiry neutralised by pinning the Layer 3 clock at both
      ends, so D1 detection no longer depends on the real date.
 
-  ⚠ STILL OPEN: arm F's any-finding FPR is 70.4%. Every remaining false positive is
-    SUSPECT-level static-heuristic noise (B2 reaches 18 of 27 packages, B1 five, A3
-    three) and belongs to fix-queue item 4. Arms D and E were not re-run, so item 3's
-    effect on real-malware recall is unmeasured.
+  ⚠ OPEN AT v18 (addressed in v19, see above): arm F's any-finding FPR was 70.4%,
+    all of it SUSPECT-level static-heuristic noise. Arms D and E were not re-run in
+    v18; v19 ran both, and arm E's v18 baseline turned out to be 97.5% — item 3's
+    hex-identifier rule caught ansi-styles@6.2.2, taking arm E's FN count from 2 to 1.
 
   ⚠ WHAT v17 FOUND — the measurement that drove the above. Numbers below are the v17
     state; see the v18 block above for what they are now.
@@ -663,11 +724,13 @@ and safety notes in eval/README.md; results and a ranked fix list in eval/REPORT
        the headline E1 differentiator — BLOCKs `fabric` and `node-sass` for containing
        the string "npm publish" in a legitimate release script.
 
-  ✅ BLOCK severity had no discriminative power — FIXED in v18. v17 measured legitimate
+  ✅ BLOCK severity had no discriminative power — FIXED. v17 measured legitimate
     packages reaching BLOCK at 44.4% (12/27, arm F) versus real malicious ones at 37.5%
     (187/499, arm D): the BLOCK rate was HIGHER on legitimate packages than on real
-    malware, so the tool's strongest signal carried negative information. It is now
-    0.0% vs 37.5%. The score-saturation half of that finding (below) is untouched.
+    malware, so the tool's strongest signal carried negative information.
+    Quote both sides from the same version: v18 was 0.0% vs 21.6% (the worm-category
+    demotion lowered the malware side too), v19 is 0.0% vs 35.1%. The score-saturation
+    half of that finding (below) is untouched.
 
   Also: ansi-styles@6.2.2 (the real Sept-2025 crypto clipper) passes all four layers,
   because the v14 hex threshold (4 → 8 consecutive \xNN) does not see the

@@ -173,19 +173,7 @@ pub fn run_layer3_local(name: &str, dir: &Path) -> CheckResult {
     ));
 
     // Derive verdict from findings
-    let verdict = if findings
-        .iter()
-        .any(|f| f.get("severity").and_then(|v| v.as_str()) == Some("BLOCK"))
-    {
-        Verdict::Block
-    } else if findings
-        .iter()
-        .any(|f| f.get("severity").and_then(|v| v.as_str()) == Some("SUSPECT"))
-    {
-        Verdict::Suspect
-    } else {
-        Verdict::Pass
-    };
+    let verdict = crate::models::verdict_from_findings(&findings);
 
     let score = crate::models::score_findings(&findings);
     CheckResult {

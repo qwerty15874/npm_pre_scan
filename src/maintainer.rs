@@ -83,9 +83,21 @@ pub fn check_maintainer_change(info: &Value) -> Option<Map<String, Value>> {
     let mut latest_sorted: Vec<String> = latest_maintainers.into_iter().collect();
     latest_sorted.sort();
 
+    // Capability tier, not an accusation (v19 — measured). A3 `maintainer` has
+    // produced ZERO true positives across every evaluation arm ever run, while
+    // false-positiving on 3 of 27 legitimate packages (axios, mongoose, react).
+    // A maintainer set changing is a fact about a package's history, not
+    // evidence of compromise: ownership transfers, co-maintainers get added.
+    // It stays visible and it still contributes to a capability cluster, but it
+    // no longer accuses on its own. Re-promote it only against a corpus where
+    // it demonstrably discriminates.
     let mut f = Map::new();
-    f.insert("severity".into(), Value::String("SUSPECT".into()));
+    f.insert("severity".into(), Value::String("INFO".into()));
     f.insert("vector".into(), Value::String("A3".into()));
+    f.insert(
+        crate::models::CAPABILITY_KEY.into(),
+        Value::String("maintainer-change".into()),
+    );
     f.insert(
         "message".into(),
         Value::String(format!(
@@ -123,7 +135,11 @@ mod tests {
     }
 
     #[test]
-    fn new_maintainer_recent_is_suspect() {
+    /// Since v19 A3 is a CAPABILITY, not an accusation: zero true positives
+    /// across every evaluation arm ever run, against 3 false positives on 27
+    /// legitimate packages. A maintainer set changing is a fact about a
+    /// package's history — ownership transfers, co-maintainers get added.
+    fn new_maintainer_recent_is_a_capability() {
         let now = iso(Utc::now());
         let old = iso(Utc::now() - chrono::Duration::days(400));
         let info = json!({
@@ -134,7 +150,11 @@ mod tests {
             }
         });
         let f = check_maintainer_change(&info).unwrap();
-        assert_eq!(f.get("severity").and_then(|v| v.as_str()), Some("SUSPECT"));
+        assert_eq!(f.get("severity").and_then(|v| v.as_str()), Some("INFO"));
+        assert_eq!(
+            f.get(crate::models::CAPABILITY_KEY).and_then(|v| v.as_str()),
+            Some("maintainer-change")
+        );
         assert!(f.get("message").unwrap().as_str().unwrap().contains("mallory"));
         assert_eq!(f.get("vector").and_then(|v| v.as_str()), Some("A3"));
     }

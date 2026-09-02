@@ -8,22 +8,9 @@ use std::collections::HashMap;
 use serde_json::Value;
 use std::path::Path;
 
-fn aggregate_verdict(findings: &[Finding]) -> Verdict {
-    for f in findings {
-        if f.get("severity").and_then(|v| v.as_str()) == Some("BLOCK") {
-            return Verdict::Block;
-        }
-    }
-    for f in findings {
-        if f.get("severity").and_then(|v| v.as_str()) == Some("SUSPECT") {
-            return Verdict::Suspect;
-        }
-    }
-    Verdict::Pass
-}
 
 fn build_result(package_name: &str, findings: Vec<Finding>) -> CheckResult {
-    let verdict = aggregate_verdict(&findings);
+    let verdict = crate::models::verdict_from_findings(&findings);
     let score = score_findings(&findings);
     CheckResult {
         package: package_name.to_string(),

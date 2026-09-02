@@ -1,5 +1,5 @@
 # CLAUDE.md
-> Last updated: 2026-08-04 (v18)
+> Last updated: 2026-08-10 (v19)
 
 ---
 
@@ -14,7 +14,7 @@ Layer 2  [████████████████████] DONE   D
 Layer 3  [████████████████████] DONE   Dynamic — condition mutation, live Docker verified
 Scoring  [████████████████████] DONE   Aggregate risk score (noisy-OR, --full pipeline)
 Eval     [████████████████████] DONE   --eval batch harness + 6-arm real-corpus experiment (v17)
-Precision[████████████░░░░░░░░] PART   v18: BLOCK-level FPs 12/27 → 0/27. SUSPECT noise open.
+Precision[████████████████░░░░] PART   v19: BLOCK 0/27, any-finding FPR 70.4% → 48.1%.
 ```
 
 > ✅ **v18 fix pass — BLOCK is now trustworthy; SUSPECT is not yet.** Queue items 0, 1, 2, 3, 5, 6
@@ -22,16 +22,24 @@ Precision[████████████░░░░░░░░] PART   v
 > 27 hard-BLOCK'd to **zero**, with no BLOCK-severity finding of any check on the benign corpus
 > (BLOCK-only FPR 44.4% → **0.0%**). Arm B's BLOCK-level FPs went 14 → 0.
 >
-> ⚠ **Still open — read before citing any FPR.** Arm F's *any-finding* FPR is **70.4%** (19 of 27
-> legitimate packages still collect at least one SUSPECT), down from 96.3% but nowhere near clean.
-> Every remaining false positive is SUSPECT-level static-heuristic noise and belongs to **fix-queue
-> item 4**, which is not done. Full before/after: **`eval/REPORT.md`**, section "v18 — first fix
-> pass"; baselines in `eval/baseline/v17/` and `eval/baseline/v18/`.
+> ✅ **v19 nearly halved the remaining noise at no recall cost.** Arm F's *any-finding* FPR is now
+> **48.1%** (13 of 27; 14 packages completely clean, was 8), arm B **46.7%**, with BLOCK-level FPR
+> still **0.0%** and both recall floors held — arm D 87.6%, arm E **97.5% with zero packages lost**.
+> Four rules measured as non-discriminating (two of them *inverted*) became **capabilities**: INFO
+> alone, escalating only when ≥3 co-occur. Baselines: `eval/baseline/v17|v18|v19/`.
+>
+> ⚠ **Still open.** 48.1% is close to the static-only ceiling at this recall floor. What remains
+> accused genuinely *has* the capability — `axios` imports http, `node-sass` runs a postinstall.
+> Telling "has" from "abuses" needs dynamic corroboration, and Layer 2/3 reaches only 11/27
+> legitimate and 28/40 malicious packages. **That is a coverage problem, not a calibration one** —
+> pass 2. Full before/after: **`eval/REPORT.md`**, section "v19 — capability model".
 >
 > **The BLOCK-severity inversion is fixed.** v17 measured BLOCK firing on legitimate packages
 > (44.4%) *more often* than on real malware (37.5%, arm D) — the severity ladder carried negative
-> information. It is now 0.0% vs 37.5%. The score-saturation half of that finding is untouched and
-> is still item 10's problem.
+> information. That inversion is gone. **Quote both sides from the same version**: v18 was 0.0%
+> (legit) vs 21.6% (malware — the worm demotion lowered it from v17's 37.5%); v19 is 0.0% vs
+> **35.1%**, the install-hook exec-shape rule having recovered the malware side without touching
+> the legit side. The score-saturation half of that finding is untouched and is still item 10's.
 >
 > **Recall did not collapse, and the reason matters.** Fixing `signatures` was expected to drop arm
 > B from 91.4% to ~25.7%. It landed at **85.7%**, because item 5 fixed real name detection at the
@@ -112,6 +120,78 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 
 ## Change Log
 
+### v19: Capability-vs-attack severity model — arm F FPR 70.4% → 48.1% (2026-08-10)
+Scope: user asked to make the project "perfect — coverage to all attack surface, increase analysis
+speed and high-end accuracy", and chose **accuracy → coverage → speed** with a hard floor: arm D/E
+recall must stay within 2 points. This is pass 1 of 3 (accuracy). Fix-queue items **4 and 10**.
+Offline **407 passed** (was 395); live Docker 20/20. All six arms re-run; baselines in
+`eval/baseline/v19/`. Full write-up: `eval/REPORT.md`, section "v19 — capability model".
+
+- **THE HEADLINE: false positives nearly halved with no recall cost.** Arm F any-finding FPR
+  **70.4% → 48.1%** (19 → 13 accused, clean packages 8 → **14**), arm B **66.7% → 46.7%**, while
+  BLOCK-level FPR stayed **0.0%** and BOTH recall floors held: arm D 88.8% → **87.6%** (floor 86.8%)
+  and arm E 97.5% → **97.5%** — zero packages lost. Arm C unchanged at 16/16, no vector moved.
+- **The design came from measurement, not intuition.** Comparing arm D (499 real malicious) against
+  arm F (27 legitimate) per check and per sub-rule showed two rules are *inverted* — they fire more
+  often on legitimate packages than on malware:
+  | rule | malicious | benign | lift |
+  |---|---|---|---|
+  | `suspicious_strings` on `process.env` | 36.3% | **44.4%** | **0.82** |
+  | `dynamic_require` | 7.6% | **14.8%** | **0.51** |
+  | `obfuscation` long-base64 | 8.6% | 7.4% | 1.16 |
+  | `maintainer` (A3) | — | 11.1% | 0 true positives, ever |
+  These four became **capabilities** (INFO alone). `process.env` on its own reached 12 of the 27
+  benign packages — the single largest false-positive source in the tool.
+- **Capability tier + cross-layer escalation (item 10).** A capability finding carries a
+  `capability` key and is INFO; a package with **≥3 distinct capabilities** gets a synthetic
+  `capability_cluster` SUSPECT finding. Counting is over **distinct capability ids, not findings** —
+  `obfuscation` and `suspicious_strings` emit one finding per file, so counting findings would let
+  one capability in three files trip a three-capability threshold and every minified bundle would
+  escalate.
+  It lives in `report::finish_scan`, which owns the four `CheckResult`s, **not** in `aggregate`,
+  which only borrows them and returns a findings-less `RiskReport`. That placement is load-bearing:
+  the eval harness reads `classification` from `RiskReport.verdict` but `detected_vectors` /
+  `by_vector` / `by_layer.sole_detector` from per-finding severity, so escalating the verdict alone
+  would have moved the confusion matrix while leaving every per-vector metric flat. Emitting a real
+  finding keeps them consistent — verified: arm B `by_vector` META went 0 → 5 fires.
+- **`install_script` rewritten from key-presence to hook-name + command-body (item 4).** It used to
+  call `scripts.get(k).is_some()` and throw the command away, so `"postinstall": "node-gyp rebuild"`
+  and `"preinstall": "curl … | sh"` were the same finding. Measured across the DataDog corpus and
+  the benign parents: `preinstall` appears **169 times in malware and 0 times in the 27 legitimate
+  packages**; an exec/exfil command shape appears in **79 malicious packages and 0 benign ones**.
+  Now: exec shape → **BLOCK**, `pre`/`postinstall` → SUSPECT, `install`/`prepare` or a recognised
+  build step (`node-gyp`, `prebuild-install`, `husky`) → capability. B1 fires on the benign corpus
+  went 5 → 1, and arm D's BLOCK-level recall rose **21.6% → 35.1%**.
+- **`node <file>` is deliberately NOT an exec shape.** `node-sass` ships
+  `"postinstall": "node scripts/build.js"` and most malicious hooks look identical — it separates
+  nothing. The hook NAME carries that weight instead.
+- **Four duplicate verdict rules collapsed into `models::verdict_from_findings`.** `aggregate_verdict`
+  existed in `checker.rs`, `layer1/mod.rs`, and inline in `layer2/mod.rs` and `layer3/mod.rs`, plus a
+  fifth dead `report::worst_verdict` with no callers. They agreed, but nothing made them agree, and
+  this pass changes severity semantics across several checks at once. Behaviour-preserving; the dead
+  one is deleted.
+- **A one-package recall loss, found and then fixed at the root.** The capability demotions initially
+  cost arm E exactly one package: `naniod`, a real `nanoid` typosquat whose only detectable signal
+  was `process.env`. Reading it revealed the actual bug — it calls **`require('os').homedir()`**, and
+  the `os.homedir()` pattern only matched the bare form. `os.homedir` is 14.4% malicious vs **0.0%**
+  benign, so widening the pattern to the indirect form is free: arm E returned to 97.5% with zero
+  benign cost. **Fix the rule, don't restore the noise.**
+- **Process failure worth recording: six arms were measured against a stale binary.** The
+  `dynamic-require` capability tag was added after the release build used for the first v19 arm runs,
+  so `dynamic_require` was demoted to INFO but never counted toward a cluster — the escalation was
+  measured with 4 of 5 capabilities. Caught only because arm B's false-positive count moved between
+  two runs that should have been identical. **Rebuild `--release` immediately before any arm run, and
+  treat an unexplained delta between two supposedly-identical runs as a bug in the harness, not
+  registry drift.** All six arms were re-run.
+- **Correction to the v18 write-up**: it compared BLOCK rates across versions — v18's legitimate
+  figure (0.0%) against v17's malware figure (37.5%). After v18 the malware figure was 21.6%, the
+  worm-category demotion having lowered it too. Corrected in place; v19 is 0.0% vs **35.1%**.
+- **The ceiling is real and it is coverage's problem, not calibration's.** 48.1% is close to the
+  static-only limit at this recall floor. What remains accused are packages that genuinely *have* the
+  capability — `axios` imports http, `node-sass` runs a postinstall. Separating "has" from "abuses"
+  needs a second evidence source, and Layer 2/3 currently reaches only 11/27 legitimate and 28/40
+  malicious packages. That is pass 2.
+
 ### v18: First precision fix pass — zero BLOCK-level false positives (2026-08-04)
 Scope: user asked to "do next build task", which is the precision fix queue from `eval/REPORT.md`.
 Implemented items **0, 1, 2, 3, 5, 6**; items 4, 7, 8, 9, 10 remain open. Offline **395 passed**
@@ -182,7 +262,8 @@ at `eval/baseline/v18/`. Full before/after: `eval/REPORT.md`, section "v18 — f
   diff events only). A re-run with the flag produced evidence on 1 finding of 128.
 - **Not established by this pass**: arms D and E were not re-run, so item 3's effect on real-malware
   recall is unmeasured (`ansi-styles@6.2.2` was verified directly instead). Arm F's *any-finding* FPR
-  is still 70.4% — every remaining false positive is SUSPECT-level and belongs to item 4.
+  was 70.4% at v18 and is 48.1% after v19's capability model; what remains is packages that
+  genuinely hold the capability, which needs coverage work (items 7-9), not calibration.
 
 ### v17: Evaluation harness + first real-corpus measurement (2026-07-30)
 Scope: user asked to select real malicious packages, dummy packages and parent packages, run them,
@@ -561,17 +642,25 @@ Scoring: BLOCK=50, SUSPECT=15, INFO=2 weighted sum, capped at 100
 Pipeline: Layer 0 BLOCK → Layer 1 skipped
 Local test: npm-pre-scan --local <dir>
 
-⚠ MEASURED DEFECTS (v17, arm F — 27 legitimate packages). Package counts, not finding
-  counts — a calibration change has to move the package count.
-  suspicious_strings  43 findings across 12 packages   STILL OPEN — fix-queue item 4
-  obfuscation         20 findings across  5 packages   STILL OPEN — fix-queue item 4
-  dynamic_require      8 findings across  4 packages   STILL OPEN — fix-queue item 4
-  install_script       5 findings across  5 packages   STILL OPEN — fix-queue item 4
-  shell_exfil          1 finding  on shadowsocks       STILL OPEN — fix-queue item 4
-  version_diff         1 finding  on bcrypt            STILL OPEN — fix-queue item 4
-  B2 as a vector reaches 18 of the 27 legitimate packages (67%). All of the above are
-  SUSPECT-level, so they no longer drive any BLOCK — but they are why arm F's overall
-  (any-finding) FPR stays high even after v18. Item 4 owns them.
+✅ RECALIBRATED in v19 (was: MEASURED DEFECTS, v17). The v17 benign-corpus counts, and
+  what each rule is now. Package counts, not finding counts — that is what a calibration
+  change has to move.
+  suspicious_strings  12 of 27 packages   SPLIT: process.env -> CAPABILITY (36.3% mal vs
+                                          44.4% benign, INVERTED); os.homedir() stays
+                                          SUSPECT (14.4% vs 0.0%) and now also matches
+                                          require('os').homedir(); /etc/* stay BLOCK.
+  obfuscation          5 of 27 packages   long-base64 -> CAPABILITY (lift 1.16). atob,
+                                          hex-identifier and hex-sequence keep their
+                                          severities (all 0.0% benign).
+  dynamic_require      4 of 27 packages   -> CAPABILITY (7.6% mal vs 14.8% benign, INVERTED)
+  install_script       5 of 27 packages   -> exec-shape command BLOCK / pre+postinstall
+                                          SUSPECT / install+prepare+build-step CAPABILITY
+  maintainer (A3)      3 of 27 packages   -> CAPABILITY (zero true positives, ever)
+  shell_exfil          1 (shadowsocks)    unchanged — lift 5.14, it earns its severity
+  version_diff         1 (bcrypt)         unchanged — too few observations to calibrate
+  Result: arm F any-finding FPR 70.4% -> 48.1%, BLOCK-level still 0.0%, and NO recall
+  lost (arm D 87.6%, arm E 97.5%). What still fires genuinely has the capability —
+  going lower needs dynamic corroboration, i.e. coverage (items 7-9), not calibration.
 
   ✅ worm_signature — FIXED in v18. Was 4 findings across 2 packages, `fabric` (1) and
      `node-sass` (3), each a BLOCK for shipping a release script containing `npm publish`;
@@ -825,9 +914,11 @@ Agent-facing notes on reading those numbers:
 - **BLOCK severity had no discriminative power — FIXED in v18.** v17 measured legitimate packages
   reaching BLOCK at **44.4%** (12/27, arm F `overall_block_only.fpr`) versus real malicious ones at
   **37.5%** (187/499, arm D `overall_block_only_rates.recall`) — a *higher* rate on legitimate
-  packages than on real malware. It is now **0.0% vs 37.5%**: arm F produces no BLOCK-severity
-  finding of any check. The score-saturation half of that v17 finding is untouched and still
-  belongs to item 10.
+  packages than on real malware. The inversion is gone, but **read both sides from the same
+  version**: v17 was 44.4% vs 37.5%; v18 was 0.0% vs **21.6%** (the worm-category demotion lowered
+  the malware side too); v19 is 0.0% vs **35.1%**. An earlier note here paired v18's legit figure
+  with v17's malware figure — corrected. The score-saturation half of that v17 finding is untouched
+  and still belongs to item 10.
 - **v18 before/after lives in `eval/baseline/v17/` vs `eval/baseline/v18/`** (arms A, B, C, F).
   Arms D and E were NOT re-run in v18, so their v17 numbers still stand and item 3's effect on
   real-malware recall is unmeasured.
@@ -835,8 +926,9 @@ Agent-facing notes on reading those numbers:
 Comparison context: OSCAR reports F1 0.95 (npm) on a real benchmark. Arm D's Layer-1-only F1 is 0.94
 on 499 real malicious packages — but that arm has no benign control, and arm F still shows a **70.4%
 any-finding FPR** on legitimate packages after v18 (arm B: 66.7% on its mixed 30-entry benign set).
-So **no headline F1 should be claimed until the static-heuristic problem — fix-queue item 4 — is
-fixed.** The BLOCK-level story is now clean (0% FPR), but an F1 computed over any-finding verdicts
+So **no headline F1 should be claimed until arm D has a benign control** — item 4's recalibration
+landed in v19 and took arm F to 48.1%, but an F1 over any-finding verdicts is still dominated by
+SUSPECT-level capability findings, and arm D cannot produce a precision figure at all. The BLOCK-level story is now clean (0% FPR), but an F1 computed over any-finding verdicts
 would still be dominated by SUSPECT noise, and arm D would have to be re-run against a benign
 control to mean anything at all.
 
@@ -919,7 +1011,7 @@ control to mean anything at all.
 - [x] 3. obfuscation: add a hex-IDENTIFIER-density check (`_0x[0-9a-f]{4,}` count / `0x` literal
         ratio). The v14 hex 4→8 change let the javascript-obfuscator family through, and
         ansi-styles@6.2.2 (real Sept-2025 clipper) passes all four layers.
-- [ ] 4. Recalibrate the static SUSPECT rules against the now-available benign corpus.
+- [x] 4. Recalibrate the static SUSPECT rules against the now-available benign corpus.
         **Target the PACKAGE count, not the finding count** — the package count is what a
         calibration change has to move: suspicious_strings 12 of 27 packages (43 findings),
         obfuscation 5 (20), dynamic_require 4 (8), install_script 5 (5). Also unaccounted for
@@ -938,7 +1030,10 @@ control to mean anything at all.
         version_diff has a path through the harness (B3 is 0/1 in arms B, C and E for lack of a
         path, not for lack of a rule); fix dummy_persistence's D2 mis-attribution; give arm E's
         B4 case (`node-ipc@12.0.1`) a route to fire B4 rather than being rescued by B2/C1.
-- [ ] 10. **Revisit severity assignment and score aggregation TOGETHER — after 1–9 land.**
+- [x] 10. **Revisit severity assignment and score aggregation TOGETHER.** DONE in v19 as the
+        capability tier + `capability_cluster` escalation. Severity is now three-tier in practice
+        (capability / accusation / block); the noisy-OR `risk_score` is still reported-not-gating and
+        its saturation is untouched — revisit if a scoring consumer ever needs it.
         Two measured facts drive this, both in the Risk-score section above: BLOCK fires on
         legitimate packages *more often* than on real malware (44.4% vs 37.5%), and `risk_score`
         does not gate the verdict and saturates (BLOCK spans 0.50–1.00, SUSPECT 0.17–1.00, six
