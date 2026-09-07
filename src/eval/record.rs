@@ -19,22 +19,8 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 
 use crate::eval::corpus::CorpusEntry;
-use crate::models::{Finding, Verdict};
+use crate::models::{is_accusing, Finding, Verdict};
 use crate::report::LayerStatus;
-
-/// Findings whose severity is INFO are diagnostic notes, not accusations, and
-/// must never turn an entry into a positive prediction. This matters concretely:
-/// `typosquat::check_typosquat` returns an INFO finding for an *exact* match
-/// against the popular-package list, so every legitimate parent package in the
-/// benign arm carries an A1 INFO finding. Counting those as positives would
-/// report a ~100% false-positive rate that is purely an artifact of the scoring
-/// rule.
-fn is_accusing(f: &Finding) -> bool {
-    matches!(
-        f.get("severity").and_then(|v| v.as_str()),
-        Some("BLOCK") | Some("SUSPECT")
-    )
-}
 
 fn finding_str<'a>(f: &'a Finding, key: &str) -> Option<&'a str> {
     f.get(key).and_then(|v| v.as_str())

@@ -63,6 +63,28 @@ pub fn verdict_from_findings(findings: &[Finding]) -> Verdict {
     Verdict::Pass
 }
 
+/// Whether a finding is an *accusation* rather than a diagnostic note.
+///
+/// Findings whose severity is INFO are diagnostic notes, not accusations, and
+/// must never turn an entry into a positive prediction. This matters concretely:
+/// `typosquat::check_typosquat` returns an INFO finding for an *exact* match
+/// against the popular-package list, so every legitimate parent package in the
+/// benign arm carries an A1 INFO finding. Counting those as positives would
+/// report a ~100% false-positive rate that is purely an artifact of the scoring
+/// rule.
+///
+/// Lives here, beside [`verdict_from_findings`], because two independent
+/// consumers must agree on it: the eval harness (`eval::record`) when scoring a
+/// prediction, and `report::finish_scan` when deciding whether a finding is
+/// corroborated. v19 collapsed four copies of the verdict rule for exactly this
+/// reason — they agreed, but nothing made them agree.
+pub fn is_accusing(f: &Finding) -> bool {
+    matches!(
+        f.get("severity").and_then(|v| v.as_str()),
+        Some("BLOCK") | Some("SUSPECT")
+    )
+}
+
 /// The `capability` key marks a finding as evidence of a *capability* rather
 /// than an accusation: something a package can do, which plenty of legitimate
 /// packages also do.
