@@ -106,6 +106,13 @@ fn rel(dir: &Path, path: &Path) -> String {
 ///
 /// Order matters — the exec/exfil test runs first, so burying `husky` in a
 /// command that also curls something does not earn the demotion.
+/// The four hooks npm runs on a downstream `npm install` of a dependency.
+///
+/// Shared with `worm_signature`, which uses them as reachability roots: a file
+/// named by one of these hooks is code the consumer executes, not build tooling.
+/// Keeping one list means the two checks cannot drift apart.
+pub(super) const INSTALL_HOOKS: &[&str] = &["preinstall", "install", "postinstall", "prepare"];
+
 pub fn check_install_scripts(pkg_json: &Value) -> Vec<Finding> {
     let mut findings = Vec::new();
     let Some(scripts) = pkg_json.get("scripts") else {
@@ -116,7 +123,7 @@ pub fn check_install_scripts(pkg_json: &Value) -> Vec<Finding> {
     let mut run_hooks: Vec<&str> = Vec::new();
     let mut cap_hooks: Vec<&str> = Vec::new();
 
-    for &hook in &["preinstall", "install", "postinstall", "prepare"] {
+    for &hook in INSTALL_HOOKS {
         let Some(cmd) = scripts.get(hook) else { continue };
         let cmd = cmd.as_str().unwrap_or("");
         if HOOK_EXEC_SHAPE.is_match(cmd) {
