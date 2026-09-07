@@ -108,7 +108,10 @@ pub fn run_layer0_name_only(
 const ESTABLISHED_MIN_AGE_DAYS: f64 = 365.0;
 const ESTABLISHED_MIN_VERSIONS: usize = 10;
 
-fn is_established(info: &Value) -> bool {
+/// Two consumers as of v20: [`downgrade_established_name_blocks`] below, and
+/// `report::demote_sole_network_import`. The version-count-not-age lesson in the
+/// table above applies to both — do NOT lower [`ESTABLISHED_MIN_VERSIONS`].
+pub(crate) fn is_established(info: &Value) -> bool {
     let old_enough = crate::registry::get_package_age_days(info)
         .is_some_and(|d| d >= ESTABLISHED_MIN_AGE_DAYS);
     let version_count = info

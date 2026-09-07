@@ -23,7 +23,7 @@ pub use layer2::run_layer2_local;
 pub use layer3::run_layer3_local;
 pub use models::{CheckResult, Finding, Verdict};
 pub use report::{
-    aggregate, run_full_local, run_full_local_collect, run_full_registry,
+    aggregate, aggregate_name_scan, run_full_local, run_full_local_collect, run_full_registry,
     run_full_registry_collect, run_full_registry_with_lists, FullScan, LayerMask, LayerStatus,
     RiskReport,
 };
