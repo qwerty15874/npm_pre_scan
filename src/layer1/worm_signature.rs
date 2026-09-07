@@ -697,23 +697,60 @@ mod tests {
         }
     }
 
-    /// A known-IOC hash is identity, not inference — it BLOCKs on its own.
+    /// A known-IOC hash is identity, not inference: it BLOCKs on its own, and it
+    /// does NOT count toward the >=2-functional-category worm aggregate.
+    ///
+    /// The hash is computed from the fixture content here rather than hard-coded,
+    /// so the test cannot rot. This replaces a v18-era test that `include_str!`d
+    /// this very file and grepped its own source text for `"BLOCK"` near the
+    /// `"ioc_hash",` literal. That guard existed for a real reason — a bulk
+    /// regex edit in v18 once accidentally demoted this branch — but it asserted
+    /// nothing about behaviour and would break on mere reformatting.
+    ///
+    /// The IOC set is injected rather than driven through `NPM_PRE_SCAN_IOCS`:
+    /// `std::env::set_var` mutates the whole test process, `cargo test` runs
+    /// these on a thread pool, and `load_iocs_skips_header_comments` reads the
+    /// same list — a race there would look like a harness fault.
     #[test]
-    fn ioc_hash_alone_still_blocks() {
-        // Content whose SHA-256 is in data/worm_iocs.txt would be needed for a
-        // true end-to-end check; tests/layer1_worm.rs::e1_shai_hulud_static_blocks
-        // covers that against the real fixture. Here we assert the severity the
-        // IOC branch is written with, so a future demotion sweep cannot catch it.
-        let src = include_str!("worm_signature.rs");
-        let ioc_branch = src
-            .split(r#""ioc_hash","#)
-            .next()
-            .expect("ioc_hash push not found");
-        let tail = &ioc_branch[ioc_branch.len().saturating_sub(400)..];
+    fn ioc_hash_alone_blocks_and_does_not_form_the_worm_aggregate() {
+        let body = "module.exports = function noop() {};\n"; // trips no category
+        let d = dir_with(&[("index.js", body)]);
+        let hash = format!("{:x}", Sha256::digest(body.as_bytes()));
+        let iocs: HashSet<String> = std::iter::once(hash.clone()).collect();
+
+        let f = check_worm_signature_with_iocs(&Value::Null, d.path(), &iocs);
+        assert_eq!(f.len(), 1, "expected exactly the IOC finding; got: {f:?}");
+        assert_eq!(severities(&f), vec!["BLOCK"], "got: {f:?}");
+        assert_eq!(cats(&f), vec!["ioc_hash"], "got: {f:?}");
+        assert_eq!(f[0].get("vector").and_then(|v| v.as_str()), Some("E1"));
         assert!(
-            tail.contains(r#""BLOCK""#),
-            "the ioc_hash finding must stay BLOCK; tail was:\n{tail}"
+            f[0].get("message")
+                .and_then(|v| v.as_str())
+                .unwrap()
+                .contains(&hash),
+            "the message must name the matched hash; got: {f:?}"
         );
+        assert!(
+            !cats(&f).contains(&"worm"),
+            "ioc_hash alone is not the worm badge; got: {f:?}"
+        );
+    }
+
+    /// An IOC hit is identity, so it must survive the build-tooling path
+    /// exclusion: dropping a known payload into `scripts/` must not hide it.
+    /// This is the structural invariant that keeps the v20 exclusion from
+    /// handing an attacker a one-directory bypass of the only non-heuristic
+    /// BLOCK in this check.
+    #[test]
+    fn ioc_hash_is_not_suppressed_by_the_build_tooling_path_exclusion() {
+        let body = "// known payload\n";
+        let d = dir_with(&[("scripts/util/helper.js", body)]);
+        let iocs: HashSet<String> =
+            std::iter::once(format!("{:x}", Sha256::digest(body.as_bytes()))).collect();
+
+        let f = check_worm_signature_with_iocs(&Value::Null, d.path(), &iocs);
+        assert_eq!(cats(&f), vec!["ioc_hash"], "got: {f:?}");
+        assert_eq!(severities(&f), vec!["BLOCK"], "got: {f:?}");
     }
     // ---- v20: build/release tooling path exclusion ----
 
