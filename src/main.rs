@@ -6,7 +6,7 @@ use npm_pre_scan::models::Verdict;
 use npm_pre_scan::registry::get_package_info;
 use npm_pre_scan::toplist;
 use npm_pre_scan::{
-    aggregate, run_full_local, run_full_registry_with_lists, run_layer0, run_layer1,
+    aggregate_name_scan, run_full_local, run_full_registry_with_lists, run_layer0, run_layer1,
     run_layer1_local, run_layer2_local, run_layer3_local, CheckResult, RiskReport,
 };
 
@@ -491,8 +491,10 @@ fn main() {
     // package wasn't found on the registry", which is a genuine `NotRun`, not
     // a `Skipped`.
     let mut all_pairs: Vec<(CheckResult, Option<CheckResult>, bool)> = Vec::new();
+    let mut reports: Vec<RiskReport> = Vec::new();
 
     for pkg in &cli.packages {
+        let mut registry_doc: Option<serde_json::Value> = None;
         if cli.verbose {
             eprintln!("[Layer 0] Checking {} (metadata/registry checks)...", pkg);
         } else {
@@ -517,23 +519,25 @@ fn main() {
                     eprintln!("  → Package not found on registry — skipping Layer 1");
                     None
                 }
-                Some(info) => Some(run_layer1(pkg, &info)),
+                Some(info) => {
+                    let result = run_layer1(pkg, &info);
+                    // Kept so the establishment guard can be applied below. No
+                    // extra HTTP — this is the document Layer 1 just used.
+                    registry_doc = Some(info);
+                    Some(result)
+                }
             }
         };
 
+        // Same post-passes `finish_scan` applies, so the default command does not
+        // keep reporting a false positive that `--full` no longer reports. The
+        // results come back because a demotion rewrites them in place and the
+        // per-layer printing below has to show it too.
+        let (l0, l1, report) =
+            aggregate_name_scan(l0, l1, l1_skipped_by_l0_block, registry_doc.as_ref());
         all_pairs.push((l0, l1, l1_skipped_by_l0_block));
+        reports.push(report);
     }
-
-    let reports: Vec<RiskReport> = all_pairs
-        .iter()
-        .map(|(l0, l1, l1_skipped)| {
-            let mut report = aggregate(&l0.package, [Some(l0), l1.as_ref(), None, None]);
-            if *l1_skipped {
-                report.mark_skipped(1);
-            }
-            report
-        })
-        .collect();
 
     if cli.json {
         let output = if reports.len() == 1 {

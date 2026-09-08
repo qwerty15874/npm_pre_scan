@@ -33,15 +33,28 @@ All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-ve
   check on the benign corpus. The real Sept-2025 crypto clipper (ansi-styles@6.2.2),
   which used to pass all four layers, is now caught.
 
-✅ v19 nearly halved what was left, at no recall cost. 14 of 27 legitimate packages are
-  now completely clean (was 8); any-finding FPR 70.4% -> 48.1%. Four rules that measured
-  as non-discriminating — two of them INVERTED, firing more on legitimate packages than
-  on malware — became capabilities: informational alone, accusing only when >=3 co-occur.
+✅ v19 nearly halved what was left, at no recall cost. Four rules that measured as
+  non-discriminating — two of them INVERTED, firing more on legitimate packages than on
+  malware — became capabilities: informational alone, accusing only when >=3 co-occurred.
+  Any-finding FPR 70.4% -> 48.1%.
 
-⚠ Do not cite an FPR without reading EVALUATION. 13 of 27 legitimate packages still
-  collect at least one SUSPECT. They genuinely have the capability (axios imports http,
-  node-sass runs a postinstall) — telling "has" from "abuses" needs dynamic evidence,
-  and the dynamic layers reach only 11 of 27. That is a coverage limit, not calibration.
+✅ v20 cut it again, and overturned one of v19's own decisions. 19 of 27 legitimate
+  packages are now completely clean (was 14); any-finding FPR 48.1% -> 29.6%, arm B
+  46.7% -> 30.0%, with EVERY recall figure bit-identical to v19 (arm D 437/499, arm E
+  39/40, arm C 16/16) and BLOCK-level FPR still 0.0%. v19's >=3-capability escalation
+  turned out to be the tool's largest false-positive source — it fired on 2.0% of real
+  malware versus 18.5% of legitimate packages (lift 0.11) and was the sole accusing
+  detector on ZERO of 539 malicious samples — so the conjunction rule was removed as
+  refuted while the capability tier stays. A sole, uncorroborated network import on an
+  established package became a capability, and unreachable build/release tooling is now
+  exempt from the worm heuristic.
+
+⚠ Do not cite an FPR without reading EVALUATION. 8 of 27 legitimate packages still
+  collect at least one SUSPECT. They genuinely have the capability (node-sass runs a
+  postinstall, jquery ships an eval) — telling "has" from "abuses" needs dynamic
+  evidence, and the dynamic layers reach only 11 of 27. That is a coverage limit, not
+  calibration: the remaining four `obfuscation` cases CANNOT be demoted at this recall
+  floor (measured: it would take arm D to 85.6%, below 86.8%).
 
 
 -------------------------------------------------------------------------------
@@ -49,9 +62,9 @@ All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-ve
 -------------------------------------------------------------------------------
 
  Coverage is complete. The measured column is what the real-corpus arms observed,
- updated for the v18 fix pass (v17 figures shown as "was" where they changed).
+ updated for the v20 fix pass (earlier figures shown as "was" where they changed).
 
-   fires  cross-arm total (dominated by the malicious corpora — arms A/D/E), v17 run.
+   fires  cross-arm total (dominated by the malicious corpora — arms A/D/E).
    FP     distinct legitimate packages out of the 27 in eval/corpus/parent_benign.tsv,
           as measured by arm F. Arm F is the only arm that ran all four layers over the
           benign corpus, so it is the single source for false positives. Do NOT sum FPs
@@ -60,7 +73,7 @@ All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-ve
 
  NO VECTOR NOW PRODUCES A BLOCK-LEVEL FALSE POSITIVE. Every FP below is SUSPECT-level.
 
- ID  Attack vector                    Layer    Implemented                          fires (all arms) / FP (arm F, v19)
+ ID  Attack vector                    Layer    Implemented                          fires (all arms) / FP (arm F, v20)
  --  -------------------------------- ------   -----------------------------------  --------------------------
  A1  Typosquatting                    0        BLOCK (edit_dist ≤1; suffix squat;   OK 0 FP (was 1, sqlite).
                                                homoglyph-fold)                         Arm B name recall 25.7%
@@ -76,13 +89,18 @@ All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-ve
                                                pre+postinstall SUSPECT /               (node-sass). v19 hook+body
                                                install+prepare CAPABILITY.             split; arm D BLOCK-level
                                                L2 live BLOCK                           recall 21.6% -> 35.1%
- B2  Obfuscation (eval+base64, hex,   1        BLOCK (eval+Buffer.from; >=25        ! 392 fires / 9 of 27 legit
-     hex-identifier density)                   distinct _0x identifiers).              packages (was 18). v18 closed
-                                               long-base64 -> CAPABILITY (v19)         the obfuscator.io gap:
-                                                                                      ansi-styles@6.2.2 now BLOCKs
-                                                                                      (was a clean PASS)
- B3  Malicious version update         1        BLOCK (newly-introduced eval/diff)   X 2 fires / 1 FP (bcrypt) —
-                                                                                      no true positive; too few
+ B2  Obfuscation (eval+base64, hex,   1        BLOCK (eval+Buffer.from; >=25        ! 392 fires / 5 of 27 legit
+     hex-identifier density)                   distinct _0x identifiers).              packages (was 9, was 18).
+                                               long-base64 -> CAPABILITY (v19).        v18 closed the obfuscator.io
+                                               network_imports -> CAPABILITY when      gap: ansi-styles@6.2.2 now
+                                               sole + established (v20)                BLOCKs (was a clean PASS).
+                                                                                      The 4 residual obfuscation
+                                                                                      FPs CANNOT be demoted at
+                                                                                      this floor — see item 7
+ B3  Malicious version update         1        BLOCK (newly-introduced eval/diff)   X 2 fires / 2 FP (bcrypt,
+                                                                                      nodemailer — the latter is
+                                                                                      registry DRIFT at v20) — no
+                                                                                      true positive ever; too few
                                                                                       observations to calibrate
  C1  Import-time execution            2        live BLOCK (import side effects)     OK 25 fires / 0 FP
  C2  Slow exfiltration (DNS tunnel)   2        live BLOCK (encoded labels)          OK 10 fires / 0 FP
@@ -93,10 +111,12 @@ All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-ve
  D2  Environment-triggered            3        live SUSPECT (env scenario)          - 9 fires / 0 FP, some noise
  D3  Trigger-on-use (API-gated)       3        live SUSPECT (fuzz scenario)         ! 2 fires / 1 FP (nodemailer;
                                                                                       structural). Item 7
- E1  Self-propagating worm            1+2      L1: category SUSPECT, >=2-category   OK 194 fires, 5/5 detected;
-                                               aggregate or IOC hash BLOCK (v18)       IOC matched real Shai-Hulud
-                                                                                      / 2 FP (fabric, node-sass)
-                                                                                      now SUSPECT, was BLOCK
+ E1  Self-propagating worm            1+2      L1: category SUSPECT, >=2-category   OK 191 fires, 5/5 detected;
+                                               IN ONE FILE or IOC hash BLOCK.          IOC matched real Shai-Hulud
+                                               Unreachable build/release tooling       / 1 FP (node-sass only —
+                                               exempt (v20)                            fabric now fully clean).
+                                                                                      3 arm D packages lose E1 but
+                                                                                      stay TP via B1;B2
  B4  Destructive / persistence        2+3      live BLOCK (wiper: mass-deletion;    - 3 fires / 0 FP, but arm E
                                                persistence: sensitive-file write —     B4 recall is 0/1: the
                                                .npmrc/.bashrc/authorized_keys/         labelled wiper node-ipc@
@@ -144,8 +164,9 @@ Runs on registry metadata only; nothing is downloaded or executed.
                   (v19: A3 has produced ZERO true positives across every
                    evaluation arm ever run, against 3 false positives on 27
                    legitimate packages. Ownership transfers and co-maintainer
-                   additions are ordinary. It stays visible and still counts
-                   toward a capability cluster; it no longer accuses alone.)
+                   additions are ordinary. It stays visible but no longer
+                   accuses alone. v20 removed the capability cluster it used
+                   to feed, so A3 is now INFO-only.)
 
   signatures      Verifies the npm registry's ECDSA-P256 signature on the latest
                   version (equivalent to `npm audit signatures`).       (vector META)
@@ -239,6 +260,16 @@ recursively scans all .js / .cjs / .mjs / .ts / .tsx / .jsx files. No execution.
   network_imports    require/import of axios, node-fetch, cross-fetch, got,
                      superagent, request, ws, socket.io, http(s)-proxy-agent,
                      undici                                                → SUSPECT
+                     (v20: demoted to a `network-io` capability when it is the
+                      ONLY accusation AND the package is itself established.
+                      The rule discriminates — 34.9% of real malware vs 14.8%
+                      of legitimate parents, lift 2.35, comparable to
+                      shell_exfil — so it is NOT demoted wholesale. But as a
+                      SOLE signal it inverts, and every legitimate package it
+                      hit was a library whose purpose IS network I/O. Safe for
+                      the compromised-established class because version_diff
+                      reports a NEWLY INTRODUCED network import, which breaks
+                      solitude. Registry path only.)
   shell_exfil        child_process exec/spawn of curl / wget / nc / ncat /
                      python / perl / ruby, a /dev/tcp/ socket, or `base64 -d` → SUSPECT
 
@@ -260,7 +291,7 @@ recursively scans all .js / .cjs / .mjs / .ts / .tsx / .jsx files. No execution.
                        credential_harvest TruffleHog / IMDS / creds        → SUSPECT
                        exfil_persistence  webhook.site / GH-API            → SUSPECT
                        ioc_hash           SHA-256 matches known IOC        → BLOCK
-                       worm aggregate     ≥2 categories present            → BLOCK (vector E1)
+                       worm aggregate     ≥2 categories IN ONE FILE        → BLOCK (vector E1)
 
                      ✅ FIXED in v18. Each category used to BLOCK on its own,
                      independently of the ≥2 rule — so the aggregate never
@@ -276,16 +307,45 @@ recursively scans all .js / .cjs / .mjs / .ts / .tsx / .jsx files. No execution.
                      because it is identity, not inference. The Shai-Hulud fixture
                      still BLOCKs via two categories plus its IOC.
 
+                     ✅ v20 — two further fixes.
+                     (a) Build/release tooling is EXEMPT unless reachable from the
+                     package's declared entry surface (install hooks ∪ main ∪ bin
+                     ∪ exports, followed transitively through relative requires
+                     and one `npm run` hop). Patterns: a leading `scripts/`
+                     component, and a root-level `publish*`/`release*` file.
+                     `lib/` is deliberately NOT tooling — node-sass's
+                     lib/extensions.js is shipped runtime code — which bounds
+                     what this can clear. The entry surface, not install hooks
+                     alone, is load-bearing: 13 malicious packages ship a root
+                     publishScript.js AS their `main` with no install hook, and
+                     a hooks-only rule loses all 13 (arm D 87.6% → 85.0%,
+                     against an 86.8% floor). The IOC hash is checked BEFORE the
+                     exclusion, so a known payload cannot be hidden by choosing
+                     a directory name. Result: `fabric` is fully clean.
+                     (b) The ≥2-category aggregate now requires the categories to
+                     CO-OCCUR IN ONE FILE. The count used to accumulate
+                     package-wide, so a semantic-release-shaped repo with
+                     `npm publish` in one script and GITHUB_TOKEN in another was
+                     a BLOCK on wholly legitimate code. Measured cost: zero —
+                     all 77 real `worm` aggregates across arms C/D/E already
+                     have ≥2 categories in a single file.
+
 Per-layer scoring:  BLOCK=50, SUSPECT=15, INFO=2; weighted sum capped at 100.
 
-CAPABILITY TIER (v19). A rule measured as non-discriminating emits INFO with a
-`capability` tag instead of accusing. Reading process.env is what configuration IS;
-a bundler emits require(variable) by construction. But capabilities are not
-independent: a package that reads the environment AND resolves modules dynamically
-AND ships an encoded blob is a different proposition from one that does any single
-one of those. A package carrying >=3 DISTINCT capabilities gets a `capability_cluster`
-SUSPECT finding (vector META). Distinct ids, not findings — obfuscation and
-suspicious_strings emit one finding per file.
+CAPABILITY TIER (v19, revised v20). A rule measured as non-discriminating emits
+INFO with a `capability` tag instead of accusing. Reading process.env is what
+configuration IS; a bundler emits require(variable) by construction. The tag's
+job is to mark a finding as NOT an accusation, so it never drives a verdict.
+
+v19 also hypothesised that capabilities are not independent, and escalated a
+package carrying >=3 distinct capabilities to a `capability_cluster` SUSPECT
+finding (vector META). v20 REMOVED that conjunction rule as refuted by
+measurement: it fired on 2.0% of real malware versus 18.5% of legitimate
+packages (lift 0.11, inverted by a factor of nine), was the sole accusing
+detector on ZERO of 539 malicious samples but accused `mongoose` outright, and
+has no operating point at all — capability counts are bounded at 3 in BOTH
+corpora, so the threshold is inverted at 3 and dead code at 4. The tier stays;
+the conjunction is gone. Do not reintroduce it.
 
 
 -------------------------------------------------------------------------------
@@ -601,12 +661,20 @@ Dummy packages (gitignored; payload-free; never published):
     dummy_api_triggered     Layer 3 (D3)  VERIFIED  SUSPECT (live Docker; fuzz scenario)
     dummy_benign_l3         Layer 2+3     VERIFIED  PASS   (precision control — no false positives)
 
-  ⚠ dummy_timebomb EXPIRES 2026-09-01. After that its payload fires at baseline too,
-    the D1 diff goes empty, and D1 detection silently drops to zero — taking
-    d1_timebomb_live_run and dummy_timebomb_full_pipeline_flags_risk with it. D1 is
-    the flagship of the project's stated core contribution, so this is a dated item
-    at the top of CLAUDE.md's Task Checklist. Preferred fix: pin the harness clock
-    rather than re-date the fixture, so it cannot recur.
+  ✅ dummy_timebomb's 2026-09-01 expiry — NEUTRALISED in v18, and now PROVEN IN THE
+    FIELD. The hazard was that once the real date crossed the fixture's trigger its
+    payload would fire at baseline too, the D1 diff would go empty, and D1 detection
+    would silently drop to zero — taking d1_timebomb_live_run and
+    dummy_timebomb_full_pipeline_flags_risk with it. D1 is the flagship of the
+    project's stated core contribution, so a silent zero there would gut the headline
+    claim. v18 fixed it by pinning the harness clock (libfaketime LD_PRELOADed in
+    EVERY Layer 3 scenario: baseline/env/fuzz at FAKETIME_BASE, clock at
+    FAKETIME_CLOCK) rather than re-dating the fixture, which would have bought a year
+    and then recurred.
+    The v20 arm C run on 2026-09-07 — SIX DAYS PAST the trigger date — still detects
+    dummy_timebomb via D1. The differential is genuinely date-invariant, which is
+    something no run before the deadline could establish. Invariant enforced offline
+    by tests/layer3_clock_pin.rs: FAKETIME_BASE < fixture trigger < FAKETIME_CLOCK.
 
   Two further caveats found by running the dummies through the batch harness:
     dummy_persistence is mis-attributed to D2 — its .bashrc write is unconditional
@@ -616,7 +684,7 @@ Dummy packages (gitignored; payload-free; never published):
 
 
 -------------------------------------------------------------------------------
- EVALUATION  (v17 — measured against packages the tool did not ship with)
+ EVALUATION  (v20 — measured against packages the tool did not ship with)
 -------------------------------------------------------------------------------
 The dummy table above verifies that each layer WORKS. It cannot measure precision:
 every fixture was authored by this project. `--eval` closes that gap. Full corpus
@@ -658,6 +726,33 @@ and safety notes in eval/README.md; results and a ranked fix list in eval/REPORT
       D        88.8% -> 87.6%        (no benign control)  floor 86.8% HELD
       E        97.5% -> 97.5%        (no benign control)  floor 95.5% HELD
       F              —              70.4% -> 48.1%        0.0%
+
+  ── v20 FIX PASS (2026-09-07) — item 4 continued + item 2's build-path half ──
+  All six arms re-run against eval/baseline/v19/; snapshot in eval/baseline/v20/.
+  EVERY recall figure came back BIT-IDENTICAL. The two rules recalibrated measured
+  as inverted (or inverted-when-sole), so removing their accusations subtracted
+  false positives without subtracting detections.
+
+      arm   recall v19 -> v20      any-finding FPR      BLOCK-level FPR
+      ---   ------------------     -----------------    ---------------
+      A         1.3% ->  1.3%       3.7% ->  3.7%        3.7%
+      B        85.7% -> 85.7%      46.7% -> 30.0%        0.0%   (prec 56.2 -> 66.7%)
+      C     16/16 pkgs, unchanged    0.0% ->  0.0%        0.0%
+      D    437/499 -> 437/499        (no benign control)  floor 86.8% HELD
+      E      39/40 -> 39/40          (no benign control)  floor 95.5% HELD
+      F              —              48.1% -> 29.6%        0.0%   (clean 14 -> 19)
+
+    Cleared: axios, fabric, http-proxy, mongoose, proxy. Newly accused: NONE.
+    Remaining 8: node-sass (install_script + worm_signature), bcrypt & nodemailer
+    (version_diff), jquery/lodash/d3/babel-cli (obfuscation), shadowsocks
+    (shell_exfil). Per-vector false hits: META 5 -> 0, B2 9 -> 5, E1 2 -> 1,
+    B3 1 -> 2 (registry DRIFT — nodemailer was republished between runs), B1 and
+    D3 unchanged at 1.
+
+    A third demotion is NOT available at this floor: solitude-gating the two
+    residual obfuscation sub-rules (bare eval(), lift 1.81; Function() ctor,
+    1.54) takes arm D to 85.6%, below 86.8%, and arm D has no registry path for
+    an establishment gate to rescue it. The ceiling is coverage's — items 7,7b,8.
 
   ✅ Four non-discriminating rules became CAPABILITIES (INFO alone, escalate at >=3):
      process.env (36.3% malicious vs 44.4% benign — INVERTED), dynamic_require (7.6%

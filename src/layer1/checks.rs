@@ -106,6 +106,13 @@ fn rel(dir: &Path, path: &Path) -> String {
 ///
 /// Order matters — the exec/exfil test runs first, so burying `husky` in a
 /// command that also curls something does not earn the demotion.
+/// The four hooks npm runs on a downstream `npm install` of a dependency.
+///
+/// Shared with `worm_signature`, which uses them as reachability roots: a file
+/// named by one of these hooks is code the consumer executes, not build tooling.
+/// Keeping one list means the two checks cannot drift apart.
+pub(super) const INSTALL_HOOKS: &[&str] = &["preinstall", "install", "postinstall", "prepare"];
+
 pub fn check_install_scripts(pkg_json: &Value) -> Vec<Finding> {
     let mut findings = Vec::new();
     let Some(scripts) = pkg_json.get("scripts") else {
@@ -116,7 +123,7 @@ pub fn check_install_scripts(pkg_json: &Value) -> Vec<Finding> {
     let mut run_hooks: Vec<&str> = Vec::new();
     let mut cap_hooks: Vec<&str> = Vec::new();
 
-    for &hook in &["preinstall", "install", "postinstall", "prepare"] {
+    for &hook in INSTALL_HOOKS {
         let Some(cmd) = scripts.get(hook) else { continue };
         let cmd = cmd.as_str().unwrap_or("");
         if HOOK_EXEC_SHAPE.is_match(cmd) {
@@ -780,20 +787,39 @@ mod tests {
         assert_eq!(vectors(&f), vec!["B2"]);
     }
 
-    // 3d TRUE-POSITIVE control: a genuine 100+ char base64 payload literal
-    // (no data: URI nearby) must still be flagged SUSPECT.
+    /// v19 CALIBRATION PIN: a long base64 literal is a **capability**, not an
+    /// accusation. Measured lift 1.16 — 8.6% of real malware versus 7.4% of the
+    /// 27 legitimate parents, i.e. about as common in a benign bundle as in a
+    /// payload — so it is INFO and carries `capability: "encoded-blob"`.
+    ///
+    /// This test previously asserted only that the MESSAGE was present, and its
+    /// name and comment both said SUSPECT. It therefore passed identically
+    /// before and after the v19 demotion, while telling the next reader the
+    /// opposite of what the rule does — exactly the shape that gets "restored"
+    /// by mistake. The demotion bought a large share of the arm F FPR
+    /// improvement and nothing pinned it.
+    ///
+    /// `f.len() == 1` is the guard against a re-promotion sneaking a second,
+    /// accusing finding in alongside: 150 `A`s trip no other rule (no `eval`,
+    /// no `atob`, no `\xNN` run, no `_0x` identifiers).
     #[test]
-    fn obfuscation_long_base64_literal_is_suspect() {
+    fn obfuscation_long_base64_literal_is_a_capability_not_an_accusation() {
         let payload = "A".repeat(150);
         let d = dir_with(&[("a.js", &format!("const p = \"{}==\";", payload))]);
         let f = check_obfuscation(d.path());
-        assert!(
-            f.iter().any(|f| f.get("message").and_then(|v| v.as_str()) == Some(
-                "Long base64-like string literal detected (possible encoded payload)"
-            )),
-            "expected a base64 finding; got: {:?}",
-            f
+        assert_eq!(f.len(), 1, "expected exactly the base64 finding; got: {f:?}");
+        assert_eq!(
+            f[0].get("message").and_then(|v| v.as_str()),
+            Some("Long base64-like string literal detected (possible encoded payload)"),
+            "got: {f:?}"
         );
+        assert_eq!(sevs(&f), vec!["INFO"], "must stay INFO; got: {f:?}");
+        assert_eq!(
+            f[0].get(CAPABILITY_KEY).and_then(|v| v.as_str()),
+            Some("encoded-blob"),
+            "the capability id is what keeps it non-accusing; got: {f:?}"
+        );
+        assert_eq!(vectors(&f), vec!["B2"], "got: {f:?}");
     }
 
     // 3d FP-CONTROL: a base64 literal that is a `data:` URI payload (image/font/etc.)

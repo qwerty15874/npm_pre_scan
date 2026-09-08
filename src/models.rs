@@ -63,6 +63,28 @@ pub fn verdict_from_findings(findings: &[Finding]) -> Verdict {
     Verdict::Pass
 }
 
+/// Whether a finding is an *accusation* rather than a diagnostic note.
+///
+/// Findings whose severity is INFO are diagnostic notes, not accusations, and
+/// must never turn an entry into a positive prediction. This matters concretely:
+/// `typosquat::check_typosquat` returns an INFO finding for an *exact* match
+/// against the popular-package list, so every legitimate parent package in the
+/// benign arm carries an A1 INFO finding. Counting those as positives would
+/// report a ~100% false-positive rate that is purely an artifact of the scoring
+/// rule.
+///
+/// Lives here, beside [`verdict_from_findings`], because two independent
+/// consumers must agree on it: the eval harness (`eval::record`) when scoring a
+/// prediction, and `report::finish_scan` when deciding whether a finding is
+/// corroborated. v19 collapsed four copies of the verdict rule for exactly this
+/// reason — they agreed, but nothing made them agree.
+pub fn is_accusing(f: &Finding) -> bool {
+    matches!(
+        f.get("severity").and_then(|v| v.as_str()),
+        Some("BLOCK") | Some("SUSPECT")
+    )
+}
+
 /// The `capability` key marks a finding as evidence of a *capability* rather
 /// than an accusation: something a package can do, which plenty of legitimate
 /// packages also do.
@@ -86,33 +108,47 @@ pub fn verdict_from_findings(findings: &[Finding]) -> Verdict {
 /// noise, and `process.env` alone reached 12 of the 27 legitimate packages —
 /// the single largest false-positive source in the tool.
 ///
-/// They are not worthless, though: a package that reads the environment *and*
-/// resolves modules dynamically *and* ships an encoded blob is a different
-/// proposition from one that merely does any of those. So a capability finding
-/// is INFO on its own and `report::finish_scan` escalates a package carrying
-/// [`CAPABILITY_ESCALATION_THRESHOLD`] distinct capabilities to SUSPECT.
+/// Reading `process.env` is what configuration *is*; a bundler emits
+/// `require(variable)` by construction.
 ///
-/// Count **distinct capability ids, not findings**: `obfuscation` and
-/// `suspicious_strings` emit one finding per file, so counting findings would
-/// let a single capability in three files trip a three-capability threshold.
+/// ## What this key still does
+///
+/// It marks a finding as **not an accusation**, so [`verdict_from_findings`] and
+/// [`is_accusing`] skip it. That is its whole remaining job, and it is a real
+/// one — do not delete the key as dead code. Without it every rule in the table
+/// above goes back to being an accusation.
+///
+/// ## The conjunction rule was removed as refuted (v20 — measured)
+///
+/// v19 also hypothesised that capabilities are not independent: a package that
+/// reads the environment **and** resolves modules dynamically **and** ships an
+/// encoded blob might be a different proposition from one that merely does any
+/// of those. So it escalated a package carrying >=3 distinct capabilities to a
+/// synthetic `capability_cluster` SUSPECT finding.
+///
+/// Measured against the same corpora, that hypothesis is false, and the
+/// escalation was the single largest false-positive source in the tool:
+///
+/// | | malicious | benign | lift |
+/// |---|---|---|---|
+/// | `capability_cluster` | 10/499 (2.0%) | 5/27 (**18.5%**) | **0.11** |
+///
+/// Worse than any rule v19 demoted (its bar was lift < 1.2), and inverted by a
+/// factor of nine. Across arms B, C, D, E and F it was the **sole** accusing
+/// detector on exactly one package — `mongoose`, which is legitimate — and on
+/// **zero** of 539 real malicious samples. It never once contributed a unique
+/// detection.
+///
+/// It also has no operating point. Capability counts are bounded at 3 in *both*
+/// corpora (benign {0:13, 1:7, 2:2, 3:5}; malicious {0:289, 1:153, 2:47, 3:10}),
+/// so the threshold is inverted at 3 and unreachable dead code at 4. The
+/// capability sets overlap almost entirely too — benign clusters draw
+/// {dynamic-require, env-read, install-hook, maintainer-change}, malicious ones
+/// {dynamic-require, encoded-blob, env-read} — which is why counting members of
+/// a pool of individually-inverted signals cannot discriminate.
+///
+/// **Do not reintroduce it.** The tier stays; the conjunction goes.
 pub const CAPABILITY_KEY: &str = "capability";
-
-/// Distinct capabilities that must co-occur before a package is escalated.
-///
-/// Calibrated, not chosen: at 2 the arm D recall floor holds but arm F keeps
-/// more false positives; at 3 the measured operating point is 87.4% recall /
-/// 48.1% FPR. Raising it further stops recovering the malicious packages that
-/// the demotions would otherwise lose.
-pub const CAPABILITY_ESCALATION_THRESHOLD: usize = 3;
-
-/// Distinct `capability` ids present in a finding set.
-pub fn capabilities_of(findings: &[Finding]) -> std::collections::BTreeSet<String> {
-    findings
-        .iter()
-        .filter_map(|f| f.get(CAPABILITY_KEY).and_then(|v| v.as_str()))
-        .map(|s| s.to_string())
-        .collect()
-}
 
 /// Risk weight contributed by a single finding of the given severity.
 fn severity_weight(severity: &str) -> u32 {

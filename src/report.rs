@@ -332,6 +332,18 @@ fn read_declared_deps(dir: &Path) -> Option<usize> {
 /// could ever run. A layer that is applicable but not requested was
 /// *intentionally declined*, which is `Skipped`. A layer that is not applicable
 /// at all stays `NotRun` — for a local directory scan, Layer 0 has no registry
+/// Per-scan context that is not a layer result: where the metadata came from,
+/// and what it said. All three are `Option` because each entry point knows a
+/// different subset — a local directory has no registry document at all.
+struct ScanContext {
+    registry_status: Option<crate::registry::FetchStatus>,
+    declared_deps: Option<usize>,
+    /// Whether the package is itself established (`crate::checker::is_established`).
+    /// `None` means it was never asked, which never demotes anything — see
+    /// [`demote_sole_network_import`].
+    established: Option<bool>,
+}
+
 /// name to work with, so calling it "skipped" would imply a choice nobody made.
 /// `tests/full_pipeline.rs` asserts exactly this distinction.
 fn finish_scan(
@@ -340,11 +352,16 @@ fn finish_scan(
     applicable: LayerMask,
     layers: [Option<CheckResult>; 4],
     layer_ms: [Option<u64>; 4],
-    registry_status: Option<crate::registry::FetchStatus>,
-    declared_deps: Option<usize>,
+    ctx: ScanContext,
 ) -> FullScan {
+    let ScanContext {
+        registry_status,
+        declared_deps,
+        established,
+    } = ctx;
+
     let mut layers = layers;
-    escalate_capability_cluster(&mut layers);
+    demote_sole_network_import(&mut layers, established);
 
     let mut report = aggregate(
         name,
@@ -372,77 +389,171 @@ fn finish_scan(
     }
 }
 
-/// Escalate a package carrying several distinct *capabilities* to SUSPECT.
+/// Demote a **sole, uncorroborated** `network_imports` accusation on an
+/// **established** package to a capability.
 ///
-/// A capability finding (see [`crate::models::CAPABILITY_KEY`]) is INFO on its
-/// own because, measured against real corpora, it carries no discriminating
-/// information: reading `process.env` is *more* common in legitimate packages
-/// than in malware. But capabilities are not independent. A package that reads
-/// the environment **and** resolves modules dynamically **and** ships an encoded
-/// blob is a different proposition from one that merely does any of those, and
-/// that conjunction is what this restores.
+/// ## Why not simply demote the rule
+///
+/// `network_imports` discriminates. Measured arm D (499 real malicious) against
+/// arm F (27 legitimate): 174/499 (34.9%) vs 4/27 (14.8%), **lift 2.35** —
+/// comparable to `shell_exfil` (lift ~4.3), which v19 deliberately kept at
+/// SUSPECT. A wholesale demotion to a capability would throw that away.
+///
+/// But every legitimate package it fires on is a library whose *purpose* is
+/// network I/O (`axios`, `http-proxy`, `nodemailer`, `proxy`), and as a **sole**
+/// signal the rule inverts: sole accuser on 13 malicious samples but on 3 of 27
+/// legitimate ones. Importing `http` is the textbook "has the capability" versus
+/// "abuses it" problem, and one import cannot tell them apart.
+///
+/// ## Why establishment, and why `Option<bool>`
+///
+/// Solitude alone is not enough: demoting on solitude everywhere costs arm D 19
+/// records (437 -> 418, 83.8%) and arm E one (39 -> 38, 95.0%), **breaking both
+/// recall floors**. The establishment gate confines the demotion to the registry
+/// path, and the three-state `Option` is the load-bearing part:
+///
+/// - `Some(true)`  — asked, and the package is established. Demote.
+/// - `Some(false)` — asked, and it is fresh. Keep the accusation.
+/// - `None`        — never asked (local directory, or a pinned scan). Keep it.
+///
+/// *Absence of evidence of establishment is not evidence of establishment.* All
+/// 539 arm D/E entries are local samples with no registry document, so the guard
+/// is structurally incapable of firing there and the floors hold by construction
+/// rather than by calibration luck.
+///
+/// ## Why this is safe for a compromised established package
+///
+/// That class — `ansi-styles@6.2.2`, the Sept-2025 chalk/debug crypto clipper —
+/// is the most dangerous one, and suppressing a signal for established packages
+/// could plausibly weaken it. It does not, and the reason is structural rather
+/// than lucky: **`version_diff` is a built-in veto.** It emits SUSPECT for a
+/// *newly introduced* network import (`layer1::version_diff`), and it runs on
+/// exactly the path where this guard is active. So the guard only ever suppresses
+/// an import that is **not new**; if a compromise *adds* network I/O — the
+/// definition of the attack class — solitude is broken and the guard stands down.
+///
+/// (`ansi-styles@6.2.2` confirms it twice over: its only finding is an
+/// `obfuscation` BLOCK for 314 distinct `_0x…` identifiers, and `network_imports`
+/// never fires on it at all — the clipper hooks browser globals.)
 ///
 /// ## Why here and not in `aggregate`
 ///
 /// `aggregate` borrows the `CheckResult`s immutably and returns a `RiskReport`,
 /// which has no findings list — only `Detections` (`Vec<String>`). `finish_scan`
-/// *owns* the four results, so it can push a real finding before aggregating.
+/// *owns* the four results, so it can rewrite a finding before aggregating.
 ///
 /// That distinction is load-bearing for the evaluation harness, which reads
 /// `classification` from `RiskReport.verdict` but `detected_vectors`,
 /// `by_vector` and `by_layer.sole_detector` from **per-finding severity** via
-/// `eval::record::is_accusing`. Escalating the verdict alone would move the
-/// confusion matrix while leaving every per-vector metric flat and
-/// `sole_detector` permanently dead. Emitting a genuine SUSPECT finding keeps
-/// all of them consistent, and `aggregate`'s existing worst-of loop picks up the
-/// verdict change for free.
-///
-/// Deliberate limits: the cluster is only reachable when more than one layer
-/// ran, so single-layer arms (name-only, or Layer-1-only) never escalate —
-/// correct, since cross-layer capabilities cannot co-occur there. `--local`
-/// emits a raw `CheckResult` rather than a `RiskReport` and so does not
-/// escalate either.
-fn escalate_capability_cluster(layers: &mut [Option<CheckResult>; 4]) {
+/// [`crate::models::is_accusing`]. Changing the verdict alone would move the
+/// confusion matrix while leaving every per-vector metric flat. Rewriting the
+/// real finding keeps them consistent.
+fn demote_sole_network_import(layers: &mut [Option<CheckResult>; 4], established: Option<bool>) {
     use serde_json::Value;
-    let mut caps: std::collections::BTreeSet<String> = Default::default();
-    for layer in layers.iter().flatten() {
-        caps.extend(crate::models::capabilities_of(&layer.findings));
-    }
-    if caps.len() < crate::models::CAPABILITY_ESCALATION_THRESHOLD {
-        return;
-    }
-    // Attach to the highest-numbered layer that ran, so the finding sits with
-    // the deepest evidence available rather than always landing on Layer 0.
-    let Some(host) = layers
-        .iter()
-        .rposition(|l| l.as_ref().is_some_and(|r| r.verdict != Verdict::Error))
-    else {
-        return;
-    };
-    let Some(result) = layers[host].as_mut() else {
-        return;
-    };
 
-    let mut f = crate::models::Finding::new();
-    f.insert("check".into(), Value::String("capability_cluster".into()));
-    f.insert("severity".into(), Value::String("SUSPECT".into()));
-    f.insert("vector".into(), Value::String("META".into()));
-    f.insert(
-        "message".into(),
-        Value::String(format!(
-            "{} distinct capabilities co-occur in one package: {}. \
-             Each is unremarkable alone; together they describe the shape of a payload.",
-            caps.len(),
-            caps.iter().cloned().collect::<Vec<_>>().join(", ")
-        )),
-    );
-    f.insert(
-        "capabilities".into(),
-        Value::Array(caps.iter().map(|c| Value::String(c.clone())).collect()),
-    );
-    result.findings.push(f);
-    result.verdict = crate::models::verdict_from_findings(&result.findings);
-    result.score = crate::models::score_findings(&result.findings);
+    if established != Some(true) {
+        return;
+    }
+
+    let is_net =
+        |f: &Finding| f.get("check").and_then(|v| v.as_str()) == Some("network_imports");
+
+    // Pass 1: borrow only (`CheckResult` is not `Clone`). Any *other* accusation
+    // means the import is corroborated and must keep its severity.
+    let mut found = false;
+    for r in layers.iter().flatten() {
+        for f in r.findings.iter().filter(|f| crate::models::is_accusing(f)) {
+            if is_net(f) {
+                found = true;
+            } else {
+                return;
+            }
+        }
+    }
+    if !found {
+        return;
+    }
+
+    // Pass 2: rewrite, then recompute the host layer's verdict and score.
+    // `aggregate` takes worst-of over LAYER verdicts, not over findings — omit
+    // this and the layer stays SUSPECT and the demotion is invisible.
+    for r in layers.iter_mut().flatten() {
+        let mut touched = false;
+        for f in r
+            .findings
+            .iter_mut()
+            .filter(|f| is_net(f) && crate::models::is_accusing(f))
+        {
+            let original = f
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("network-capable module imported")
+                .to_string();
+            f.insert("severity".into(), Value::String("INFO".into()));
+            f.insert(
+                crate::models::CAPABILITY_KEY.into(),
+                Value::String("network-io".into()),
+            );
+            f.insert("downgraded_established".into(), Value::Bool(true));
+            f.insert(
+                "message".into(),
+                Value::String(format!(
+                    "{} — downgraded: this is the only accusation against an \
+                     established package, and a network import is what such a \
+                     library is for. A newly *introduced* network import would \
+                     be reported by version_diff instead",
+                    original
+                )),
+            );
+            touched = true;
+        }
+        if touched {
+            r.verdict = crate::models::verdict_from_findings(&r.findings);
+            r.score = crate::models::score_findings(&r.findings);
+        }
+    }
+}
+
+/// Aggregate a default name scan (Layer 0 + Layer 1) into a `RiskReport`.
+///
+/// The default CLI path (`npm-pre-scan <pkg>`) does not go through
+/// [`finish_scan`]: it has no tarball, no Layer 2/3, and its own
+/// `mark_skipped(1)` semantics for Layer 0's early exit, which
+/// `tests/full_pipeline.rs` pins. It must still get `finish_scan`'s post-passes,
+/// or the *primary* command would keep reporting a false positive that `--full`
+/// no longer reports. (The capability-cluster escalation had exactly this
+/// asymmetry, and it went unnoticed for a whole release.)
+///
+/// Returns the layer results back to the caller because they may have been
+/// rewritten in place and `CheckResult` is not `Clone`. The CLI prints each
+/// layer's findings separately, so a demotion has to be visible *there* too —
+/// not only in the aggregate verdict.
+///
+/// `info` is the registry document when one was fetched. `None` means it was
+/// never asked for, which never demotes.
+pub fn aggregate_name_scan(
+    l0: CheckResult,
+    l1: Option<CheckResult>,
+    l1_skipped_by_l0_block: bool,
+    info: Option<&serde_json::Value>,
+) -> (CheckResult, Option<CheckResult>, RiskReport) {
+    let established = info.map(crate::checker::is_established);
+    let name = l0.package.clone();
+
+    let mut layers = [Some(l0), l1, None, None];
+    demote_sole_network_import(&mut layers, established);
+
+    let mut report = aggregate(&name, [layers[0].as_ref(), layers[1].as_ref(), None, None]);
+    if l1_skipped_by_l0_block {
+        report.mark_skipped(1);
+    }
+
+    let [l0, l1, _, _] = layers;
+    (
+        l0.expect("Layer 0 result is always present on the name-scan path"),
+        l1,
+        report,
+    )
 }
 
 /// Run the local pipeline over a package directory, keeping per-layer detail.
@@ -463,8 +574,14 @@ pub fn run_full_local_collect(name: &str, dir: &Path, mask: LayerMask) -> FullSc
         APPLICABLE,
         [None, l1, l2, l3],
         [None, t1, t2, t3],
-        None,
-        read_declared_deps(dir),
+        ScanContext {
+            registry_status: None,
+            declared_deps: read_declared_deps(dir),
+            // No registry document for a local directory, so establishment is
+            // unknown. `None` never demotes — this is what keeps the arm D/E
+            // recall floors intact by construction.
+            established: None,
+        },
     )
 }
 
@@ -558,8 +675,11 @@ pub fn run_full_registry_collect(
             LayerMask::ALL,
             [l0, None, None, None],
             [t0, None, None, None],
-            None,
-            None,
+            ScanContext {
+                registry_status: None,
+                declared_deps: None,
+                established: None,
+            },
         );
     }
 
@@ -580,8 +700,11 @@ pub fn run_full_registry_collect(
             LayerMask::ALL,
             [l0, Some(err), None, None],
             [t0, None, None, None],
-            status,
-            None,
+            ScanContext {
+                registry_status: status,
+                declared_deps: None,
+                established: None,
+            },
         )
     };
 
@@ -659,8 +782,15 @@ pub fn run_full_registry_collect(
         LayerMask::ALL,
         [l0, l1, l2, l3],
         [t0, t1, t2, t3],
-        Some(status),
-        declared_deps,
+        ScanContext {
+            registry_status: Some(status),
+            declared_deps,
+            // The guard's safety rests on `version_diff` breaking solitude when
+            // the network capability is newly introduced, and `version_diff` is
+            // skipped for a pinned scan (see `l1_info` above) — so a pinned scan
+            // does not get the guard either.
+            established: version.is_none().then(|| crate::checker::is_established(&info)),
+        },
     )
 }
 
@@ -977,8 +1107,11 @@ mod layer_mask_tests {
             LayerMask::ALL,
             [Some(l0), None, None, None],
             [Some(1), None, None, None],
-            None,
-            None,
+            ScanContext {
+                registry_status: None,
+                declared_deps: None,
+                established: None,
+            },
         );
         assert_eq!(scan.report.layer_status[0], LayerStatus::Ran);
         for i in 1..4 {
@@ -1026,19 +1159,34 @@ mod layer_mask_tests {
     }
 }
 
+
+/// The v20 network-import guard. Replaces `mod capability_cluster_tests`, whose
+/// rule was removed as refuted — see [`crate::models::CAPABILITY_KEY`].
 #[cfg(test)]
-mod capability_cluster_tests {
+mod network_import_guard_tests {
     use super::*;
     use crate::models::{CheckResult, Finding, Verdict, CAPABILITY_KEY};
     use serde_json::Value;
 
-    fn cap(check: &str, id: &str) -> Finding {
+    /// A finding in the shape `check_network_imports` actually emits.
+    fn net_import() -> Finding {
+        let mut f = Finding::new();
+        f.insert("check".into(), Value::String("network_imports".into()));
+        f.insert("severity".into(), Value::String("SUSPECT".into()));
+        f.insert("vector".into(), Value::String("B2".into()));
+        f.insert(
+            "message".into(),
+            Value::String("Network-capable module imported in 1 file(s)".into()),
+        );
+        f
+    }
+
+    fn other(check: &str, severity: &str, message: &str) -> Finding {
         let mut f = Finding::new();
         f.insert("check".into(), Value::String(check.into()));
-        f.insert("severity".into(), Value::String("INFO".into()));
+        f.insert("severity".into(), Value::String(severity.into()));
         f.insert("vector".into(), Value::String("B2".into()));
-        f.insert("message".into(), Value::String(format!("{check} capability")));
-        f.insert(CAPABILITY_KEY.into(), Value::String(id.into()));
+        f.insert("message".into(), Value::String(message.into()));
         f
     }
 
@@ -1052,126 +1200,212 @@ mod capability_cluster_tests {
         }
     }
 
-    fn cluster_finding(layers: &[Option<CheckResult>; 4]) -> Option<&Finding> {
-        layers.iter().flatten().flat_map(|r| r.findings.iter()).find(|f| {
-            f.get("check").and_then(|v| v.as_str()) == Some("capability_cluster")
-        })
+    /// Layer 1 only, which is the shape every case here needs.
+    fn layers_with(findings: Vec<Finding>) -> [Option<CheckResult>; 4] {
+        [None, Some(result(findings)), None, None]
+    }
+
+    fn sev_of(f: &Finding) -> Option<&str> {
+        f.get("severity").and_then(|v| v.as_str())
     }
 
     #[test]
-    fn three_distinct_capabilities_escalate_to_suspect() {
-        let mut layers = [
-            Some(result(vec![cap("maintainer", "maintainer-change")])),
-            Some(result(vec![
-                cap("suspicious_strings", "env-read"),
-                cap("dynamic_require", "dynamic-require"),
-            ])),
-            None,
-            None,
-        ];
-        assert_eq!(layers[1].as_ref().unwrap().verdict, Verdict::Pass, "INFO alone must not accuse");
-        escalate_capability_cluster(&mut layers);
-        let f = cluster_finding(&layers).expect("expected a capability_cluster finding");
-        assert_eq!(f.get("severity").and_then(|v| v.as_str()), Some("SUSPECT"));
-        // Must carry a vector, or the eval harness credits no detection at all.
-        assert_eq!(f.get("vector").and_then(|v| v.as_str()), Some("META"));
-        assert_eq!(layers[1].as_ref().unwrap().verdict, Verdict::Suspect);
-    }
+    fn sole_network_import_on_an_established_package_becomes_a_capability() {
+        let mut layers = layers_with(vec![net_import()]);
+        demote_sole_network_import(&mut layers, Some(true));
 
-    #[test]
-    fn two_capabilities_do_not_escalate() {
-        let mut layers = [
-            None,
-            Some(result(vec![
-                cap("suspicious_strings", "env-read"),
-                cap("dynamic_require", "dynamic-require"),
-            ])),
-            None,
-            None,
-        ];
-        escalate_capability_cluster(&mut layers);
-        assert!(cluster_finding(&layers).is_none());
-        assert_eq!(layers[1].as_ref().unwrap().verdict, Verdict::Pass);
-    }
-
-    /// THE COUNTING RULE. `obfuscation` and `suspicious_strings` emit one finding
-    /// PER FILE, so counting findings rather than distinct capability ids would
-    /// let a single capability spread over three files trip the threshold — and
-    /// every minified bundle would escalate.
-    #[test]
-    fn the_same_capability_in_many_files_does_not_escalate() {
-        let mut layers = [
-            None,
-            Some(result(vec![
-                cap("suspicious_strings", "env-read"),
-                cap("suspicious_strings", "env-read"),
-                cap("suspicious_strings", "env-read"),
-                cap("suspicious_strings", "env-read"),
-            ])),
-            None,
-            None,
-        ];
-        escalate_capability_cluster(&mut layers);
+        let l1 = layers[1].as_ref().unwrap();
+        let f = &l1.findings[0];
+        assert_eq!(sev_of(f), Some("INFO"), "got: {f:?}");
+        assert_eq!(
+            f.get(CAPABILITY_KEY).and_then(|v| v.as_str()),
+            Some("network-io"),
+            "the capability id is what marks it non-accusing; got: {f:?}"
+        );
+        assert_eq!(
+            f.get("downgraded_established").and_then(|v| v.as_bool()),
+            Some(true),
+            "the marker is what makes an arm F run self-verifying; got: {f:?}"
+        );
         assert!(
-            cluster_finding(&layers).is_none(),
-            "four findings of ONE capability is one capability"
+            f.get("message")
+                .and_then(|v| v.as_str())
+                .unwrap()
+                .contains("Network-capable module imported in 1 file(s)"),
+            "the original message must be preserved; got: {f:?}"
+        );
+        // Recomputing the host layer is mandatory: `aggregate` takes worst-of
+        // over LAYER verdicts, not over findings.
+        assert_eq!(l1.verdict, Verdict::Pass, "layer verdict must be recomputed");
+        assert_eq!(l1.score, 2, "score must be recomputed to the INFO weight");
+    }
+
+    /// arm E's `libxmljs2qwerty` property: corroborated, so it stands.
+    #[test]
+    fn a_corroborated_network_import_keeps_its_severity() {
+        let mut layers = layers_with(vec![
+            net_import(),
+            other("suspicious_strings", "SUSPECT", "os.homedir() reference"),
+        ]);
+        demote_sole_network_import(&mut layers, Some(true));
+
+        let l1 = layers[1].as_ref().unwrap();
+        assert_eq!(sev_of(&l1.findings[0]), Some("SUSPECT"), "{:?}", l1.findings);
+        assert_eq!(l1.verdict, Verdict::Suspect);
+    }
+
+    /// The class the guard must never weaken: a COMPROMISED ESTABLISHED package.
+    /// `ansi-styles@6.2.2`, the Sept-2025 chalk/debug crypto clipper, is
+    /// established and would pass the establishment gate — but it carries an
+    /// `obfuscation` BLOCK (314 distinct `_0x…` identifiers), so solitude fails
+    /// and nothing is demoted.
+    #[test]
+    fn a_compromised_established_package_keeps_its_network_import() {
+        let mut layers = layers_with(vec![
+            net_import(),
+            other("obfuscation", "BLOCK", "Hex-identifier obfuscation: 314 distinct"),
+        ]);
+        demote_sole_network_import(&mut layers, Some(true));
+
+        let l1 = layers[1].as_ref().unwrap();
+        assert_eq!(sev_of(&l1.findings[0]), Some("SUSPECT"), "{:?}", l1.findings);
+        assert_eq!(sev_of(&l1.findings[1]), Some("BLOCK"), "{:?}", l1.findings);
+        assert_eq!(l1.verdict, Verdict::Block);
+    }
+
+    /// Pins the veto the guard's safety argument rests on. `version_diff` fires
+    /// SUSPECT for a *newly introduced* network import, which breaks solitude —
+    /// so a compromise that ADDS network I/O is never suppressed. A future
+    /// change to `version_diff` must fail here rather than in an arm run.
+    #[test]
+    fn a_newly_introduced_network_import_keeps_its_severity() {
+        let mut layers = layers_with(vec![
+            net_import(),
+            other("version_diff", "SUSPECT", "Newly introduced network import"),
+        ]);
+        demote_sole_network_import(&mut layers, Some(true));
+
+        assert_eq!(
+            sev_of(&layers[1].as_ref().unwrap().findings[0]),
+            Some("SUSPECT")
         );
     }
 
+    /// `Some(false)` — asked, and the package is fresh. The spam-name property.
     #[test]
-    fn capabilities_are_counted_across_layers() {
-        let mut layers = [
-            Some(result(vec![cap("maintainer", "maintainer-change")])),
-            Some(result(vec![cap("dynamic_require", "dynamic-require")])),
-            Some(result(vec![cap("l2", "sensitive-read")])),
-            None,
-        ];
-        escalate_capability_cluster(&mut layers);
-        assert!(cluster_finding(&layers).is_some());
-        // Attaches to the highest-numbered layer that ran, not always Layer 0.
-        assert!(layers[2].as_ref().unwrap().findings.iter().any(|f| {
-            f.get("check").and_then(|v| v.as_str()) == Some("capability_cluster")
-        }));
+    fn a_fresh_package_keeps_its_sole_network_import() {
+        let mut layers = layers_with(vec![net_import()]);
+        demote_sole_network_import(&mut layers, Some(false));
+        assert_eq!(
+            sev_of(&layers[1].as_ref().unwrap().findings[0]),
+            Some("SUSPECT")
+        );
     }
 
-    /// An escalation must never downgrade an existing accusation.
+    /// `None` — never asked. This is the arm D/E recall-floor property: all 539
+    /// malicious sample entries take the local path and have no registry
+    /// document, so the guard is structurally incapable of firing on them.
     #[test]
-    fn escalation_does_not_lower_an_existing_block() {
-        let mut block = Finding::new();
-        block.insert("check".into(), Value::String("obfuscation".into()));
-        block.insert("severity".into(), Value::String("BLOCK".into()));
-        let mut layers = [
-            Some(result(vec![cap("maintainer", "maintainer-change")])),
-            Some(result(vec![
-                block,
-                cap("suspicious_strings", "env-read"),
-                cap("dynamic_require", "dynamic-require"),
-            ])),
-            None,
-            None,
-        ];
-        escalate_capability_cluster(&mut layers);
-        assert_eq!(layers[1].as_ref().unwrap().verdict, Verdict::Block);
+    fn without_registry_metadata_the_guard_never_fires() {
+        let mut layers = layers_with(vec![net_import()]);
+        demote_sole_network_import(&mut layers, None);
+        assert_eq!(
+            sev_of(&layers[1].as_ref().unwrap().findings[0]),
+            Some("SUSPECT")
+        );
     }
 
-    /// A layer that errored holds no evidence, so it must not host the finding.
+    /// The guard is not a general amnesty for established packages.
     #[test]
-    fn an_errored_layer_is_not_chosen_as_host() {
-        let mut errored = result(vec![]);
-        errored.verdict = Verdict::Error;
-        let mut layers = [
-            Some(result(vec![cap("maintainer", "maintainer-change")])),
-            Some(result(vec![
-                cap("suspicious_strings", "env-read"),
-                cap("dynamic_require", "dynamic-require"),
-            ])),
-            Some(errored),
-            None,
-        ];
-        escalate_capability_cluster(&mut layers);
-        assert!(layers[1].as_ref().unwrap().findings.iter().any(|f| {
-            f.get("check").and_then(|v| v.as_str()) == Some("capability_cluster")
-        }));
-        assert!(layers[2].as_ref().unwrap().findings.is_empty());
+    fn the_guard_touches_only_network_imports() {
+        let mut layers = layers_with(vec![other(
+            "shell_exfil",
+            "SUSPECT",
+            "child_process spawning a shell",
+        )]);
+        demote_sole_network_import(&mut layers, Some(true));
+        assert_eq!(
+            sev_of(&layers[1].as_ref().unwrap().findings[0]),
+            Some("SUSPECT")
+        );
+    }
+
+    /// Pins the recall-floor MECHANISM at the pipeline level, not just the
+    /// helper: that `run_full_local_collect` passes `established: None`. Arms D
+    /// and E depend on exactly this. Offline — Layer 1 only, no Docker.
+    #[test]
+    fn the_local_pipeline_never_demotes_a_network_import() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"p","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.js"),
+            "const axios = require('axios');\nmodule.exports = axios;\n",
+        )
+        .unwrap();
+
+        let scan = run_full_local_collect("p", dir.path(), LayerMask::from_indices(&[1]));
+        let l1 = scan.layers[1].as_ref().expect("Layer 1 ran");
+        let net: Vec<_> = l1
+            .findings
+            .iter()
+            .filter(|f| f.get("check").and_then(|v| v.as_str()) == Some("network_imports"))
+            .collect();
+        assert_eq!(net.len(), 1, "expected the network_imports finding: {:?}", l1.findings);
+        assert_eq!(
+            sev_of(net[0]),
+            Some("SUSPECT"),
+            "a local scan has no establishment evidence and must not demote"
+        );
+        assert_eq!(scan.report.verdict, Verdict::Suspect);
+    }
+
+    /// Negative regression: the refuted conjunction rule must stay gone. Four
+    /// distinct capabilities used to escalate to a synthetic SUSPECT.
+    #[test]
+    fn the_capability_cluster_escalation_stays_removed() {
+        fn cap(check: &str, id: &str) -> Finding {
+            let mut f = Finding::new();
+            f.insert("check".into(), Value::String(check.into()));
+            f.insert("severity".into(), Value::String("INFO".into()));
+            f.insert("vector".into(), Value::String("B2".into()));
+            f.insert("message".into(), Value::String(format!("{check} capability")));
+            f.insert(CAPABILITY_KEY.into(), Value::String(id.into()));
+            f
+        }
+        let l1 = result(vec![
+            cap("suspicious_strings", "env-read"),
+            cap("dynamic_require", "dynamic-require"),
+            cap("obfuscation", "encoded-blob"),
+            cap("install_script", "install-hook"),
+        ]);
+        let scan = finish_scan(
+            "p",
+            LayerMask::from_indices(&[1]),
+            LayerMask([false, true, true, true]),
+            [None, Some(l1), None, None],
+            [None, Some(1), None, None],
+            ScanContext {
+                registry_status: None,
+                declared_deps: None,
+                established: None,
+            },
+        );
+        let l1 = scan.layers[1].as_ref().unwrap();
+        assert!(
+            !l1.findings
+                .iter()
+                .any(|f| f.get("check").and_then(|v| v.as_str()) == Some("capability_cluster")),
+            "the conjunction rule was refuted (lift 0.11) — do not reintroduce it: {:?}",
+            l1.findings
+        );
+        assert_eq!(
+            scan.report.verdict,
+            Verdict::Pass,
+            "four capabilities alone must not accuse"
+        );
     }
 }

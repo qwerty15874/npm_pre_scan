@@ -1,5 +1,5 @@
 # CLAUDE.md
-> Last updated: 2026-08-10 (v19)
+> Last updated: 2026-09-07 (v20)
 
 ---
 
@@ -14,7 +14,7 @@ Layer 2  [████████████████████] DONE   D
 Layer 3  [████████████████████] DONE   Dynamic — condition mutation, live Docker verified
 Scoring  [████████████████████] DONE   Aggregate risk score (noisy-OR, --full pipeline)
 Eval     [████████████████████] DONE   --eval batch harness + 6-arm real-corpus experiment (v17)
-Precision[████████████████░░░░] PART   v19: BLOCK 0/27, any-finding FPR 70.4% → 48.1%.
+Precision[██████████████████░░] PART   v20: BLOCK 0/27, any-finding FPR 48.1% → 29.6%.
 ```
 
 > ✅ **v18 fix pass — BLOCK is now trustworthy; SUSPECT is not yet.** Queue items 0, 1, 2, 3, 5, 6
@@ -22,17 +22,29 @@ Precision[████████████████░░░░] PART   v
 > 27 hard-BLOCK'd to **zero**, with no BLOCK-severity finding of any check on the benign corpus
 > (BLOCK-only FPR 44.4% → **0.0%**). Arm B's BLOCK-level FPs went 14 → 0.
 >
-> ✅ **v19 nearly halved the remaining noise at no recall cost.** Arm F's *any-finding* FPR is now
+> ✅ **v19 nearly halved the remaining noise at no recall cost.** Arm F's *any-finding* FPR went to
 > **48.1%** (13 of 27; 14 packages completely clean, was 8), arm B **46.7%**, with BLOCK-level FPR
 > still **0.0%** and both recall floors held — arm D 87.6%, arm E **97.5% with zero packages lost**.
 > Four rules measured as non-discriminating (two of them *inverted*) became **capabilities**: INFO
-> alone, escalating only when ≥3 co-occur. Baselines: `eval/baseline/v17|v18|v19/`.
+> alone, escalating only when ≥3 co-occur (that escalation was REFUTED and removed in v20).
 >
-> ⚠ **Still open.** 48.1% is close to the static-only ceiling at this recall floor. What remains
-> accused genuinely *has* the capability — `axios` imports http, `node-sass` runs a postinstall.
+> ✅ **v20 cut it again and overturned one of v19's own decisions.** Arm F any-finding FPR
+> **48.1% → 29.6%** (13 → 8 accused; **19 of 27 completely clean**, was 14), arm B **46.7% → 30.0%**,
+> with BLOCK-level FPR still **0.0%** and every recall figure *bit-identical* — arm D **437/499
+> (87.6%)**, arm E **39/40 (97.5%)**, arm C 16/16. v19's ≥3-capability escalation measured at **lift
+> 0.11** (2.0% of malware vs 18.5% of legitimate packages) and was the sole accusing detector on
+> **zero of 539** malicious samples, so the conjunction rule was **removed as refuted** while the
+> capability tier stays. Also: a sole uncorroborated network import on an established package became
+> a capability, and unreachable build/release tooling is exempt from the worm heuristic.
+> Baselines: `eval/baseline/v17|v18|v19|v20/`.
+>
+> ⚠ **Still open, and now provably calibration's ceiling.** The remaining 8 genuinely *have* the
+> capability — `node-sass` runs a postinstall, `jquery` ships an `eval`. **A third demotion is not
+> available**: solitude-gating the two residual `obfuscation` sub-rules takes arm D to **85.6%**,
+> below the 86.8% floor, and arm D has no registry path for an establishment gate to rescue it.
 > Telling "has" from "abuses" needs dynamic corroboration, and Layer 2/3 reaches only 11/27
-> legitimate and 28/40 malicious packages. **That is a coverage problem, not a calibration one** —
-> pass 2. Full before/after: **`eval/REPORT.md`**, section "v19 — capability model".
+> legitimate and 28/40 malicious packages. **That is a coverage problem** — items 7, 7b, 8.
+> Full before/after: **`eval/REPORT.md`**, section "v20 — precision pass 2".
 >
 > **The BLOCK-severity inversion is fixed.** v17 measured BLOCK firing on legitimate packages
 > (44.4%) *more often* than on real malware (37.5%, arm D) — the severity ladder carried negative
@@ -119,6 +131,126 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 ---
 
 ## Change Log
+
+### v20: Precision pass 2 — arm F FPR 48.1% → 29.6%, recall bit-identical (2026-09-07)
+Scope: user asked for three precision fixes from `eval/REPORT.md`. **All three were already
+implemented** (v18/v19) — see the note at the end of this entry, it matters for reading the request.
+The user then chose to do the one genuinely-missing sub-clause **plus** a fresh recalibration of what
+arm F actually still fires. Fix-queue items **4 (continued)** and **9 (partial)**, plus the
+unimplemented half of item 2. Offline **422 passed** (was 407); arms B, C, D, E, F re-run; baselines
+in `eval/baseline/v20/`. Full write-up: `eval/REPORT.md`, section "v20 — precision pass 2".
+
+- **THE HEADLINE: false positives cut again with ZERO recall cost.** Arm F any-finding FPR
+  **48.1% → 29.6%** (13 → 8 accused, clean packages 14 → **19**), arm B **46.7% → 30.0%** (FP 14 → 9,
+  TN 16 → 21), while BLOCK-level FPR stayed **0.0%** everywhere and every recall figure came back
+  *bit-identical*: arm D **437/499 (87.6%)**, arm E **39/40 (97.5%)**, arm C 16/16. Cleared exactly
+  `axios`, `fabric`, `http-proxy`, `mongoose`, `proxy`, with **zero newly accused**.
+- **v19's own escalation was the largest remaining false-positive source, and it is refuted.**
+  Re-running v19's lift method (arm D 499 malicious vs arm F 27 legitimate):
+  | rule | malicious | benign | lift | sole accuser |
+  |---|---|---|---|---|
+  | `capability_cluster` | 10/499 (2.0%) | 5/27 (**18.5%**) | **0.11** | **0 of 539 malicious**, 1 benign |
+  | `network_imports` | 174/499 (34.9%) | 4/27 (14.8%) | 2.35 | 13 malicious, 3 benign |
+  `capability_cluster` is inverted ninefold — far past v19's own lift<1.2 demotion bar — and across
+  five arms was the sole accusing detector on exactly one package, `mongoose`, which is legitimate.
+  **It also has no operating point at all**: capability counts are bounded at 3 in *both* corpora
+  (benign `{0:13,1:7,2:2,3:5}`, malicious `{0:289,1:153,2:47,3:10}`), so the threshold is inverted at
+  3 and unreachable dead code at 4. The capability *tier* stays; the **conjunction rule is removed**.
+  **Do not reintroduce it.**
+- **Removed, not demoted to INFO — and the reason is not stylistic.** v19 justified emitting a real
+  finding (rather than only bumping the verdict) so `by_vector`/`sole_detector` stay consistent with
+  `classification`. That justification holds *only while the finding accuses*: `is_accusing` ignores
+  INFO, so a demotion sends arm B's META to 0 fires exactly as removal does. **(a) pays the full cost
+  of (b) and keeps ~75 lines plus 6 tests.** It would also leave a feedback loop armed — a package
+  demoted for solitude gains a capability id and could trip the cluster, re-accusing it via META.
+- **`network_imports`: demote only when SOLE *and* established.** Wholesale demotion would be wrong
+  (lift 2.35, comparable to `shell_exfil`'s 4.3 which v19 deliberately kept). **Solitude alone breaks
+  both floors** — applied everywhere it costs arm D 19 records (437 → 418, 83.8%) and arm E one
+  (39 → 38, 95.0%). The establishment gate confines it to the registry path, and the three-state
+  `Option<bool>` is load-bearing: `None` means "never asked" and never demotes. *Absence of evidence
+  of establishment is not evidence of establishment.*
+- **Why that is safe for a COMPROMISED ESTABLISHED package — the dangerous class.** `version_diff` is
+  a built-in veto: it emits SUSPECT for a **newly introduced** network import and runs on exactly the
+  path where the guard is active, so the guard only ever suppresses an import that is **not new**. A
+  compromise that *adds* network I/O breaks solitude and the guard stands down. `ansi-styles@6.2.2`
+  (the real Sept-2025 clipper) confirms it twice: its only finding is an `obfuscation` BLOCK (314
+  distinct `_0x…`), and `network_imports` never fires on it at all. Pinned by
+  `a_newly_introduced_network_import_keeps_its_severity` — a future change to `version_diff` must
+  fail there, not in an arm run.
+- **⚠ THE REQUEST'S WORDING, IMPLEMENTED LITERALLY, BREAKS THE ARM D FLOOR.** Item 2's second half
+  said exclude build tooling "unless reached from an **install hook**". 13 malicious packages ship
+  exactly `package.json` plus a root `publishScript.js`, declare it as **`main`**, and have **no
+  install hook at all**; their whole Layer 1 output is one `self_propagation` finding on that file.
+  Hooks-only loses all 13: arm D 87.58% → **84.97%** against an 86.8% floor. Reachability therefore
+  spans **install hooks ∪ `main` ∪ `bin` ∪ `exports`** — which is also the precise definition of
+  build tooling: *code that ships in the tarball but is not what a consumer executes.* Measured loss
+  on that basis: **zero** across arms B/C/D/E. Pinned by
+  `root_publish_script_that_is_main_is_still_scanned`, comment carrying the numbers.
+- **The IOC hash is checked BEFORE the exclusion.** Most important structural detail of the worm
+  change: a hash is identity, not inference, and must never become evadable by choosing a directory
+  name. Pinned behaviourally by `ioc_hash_is_not_suppressed_by_the_build_tooling_path_exclusion`.
+- **`lib/` is deliberately NOT a tooling pattern**, which bounds what the fix can clear. `node-sass`
+  keeps all three worm findings: `lib/extensions.js` is shipped runtime code, and
+  `scripts/util/{proxy,rejectUnauthorized}.js` are genuinely *reachable* from
+  `"install": "node scripts/install.js"` — verified live. It keeps `install_script` regardless.
+- **The worm aggregate now requires categories to CO-OCCUR IN ONE FILE.** The count accumulated
+  package-wide, so a `semantic-release`-shaped repo with `npm publish` in one script and
+  `GITHUB_TOKEN` in another was a **BLOCK on wholly legitimate code**. It had not fired on the
+  27-package corpus but nothing prevented it, and BLOCK-level FPR 0.0% is the headline v18/v19 claim.
+  Measured cost **zero**: all 77 real `worm` aggregates across arms C/D/E already have ≥2 categories
+  in a single file; **none** relies on cross-file accumulation.
+- **The default CLI was bypassing every post-pass.** `main.rs` called `aggregate` directly, so
+  `npm-pre-scan axios` would have kept reporting a false positive that `--full axios` no longer
+  reports. `capability_cluster` had the identical asymmetry and it went unnoticed for a release.
+  Now routed through `finish_scan`'s post-passes via `report::aggregate_name_scan`, which returns the
+  layer results because the CLI prints them per layer and a demotion must be visible there too.
+  `mark_skipped(1)` semantics (pinned by `tests/full_pipeline.rs`) preserved.
+- **Bug found by running the tool, not by reasoning — a trap for the next agent.** Entry points
+  disagree on what `dir` is: `run_layer1` passes the tarball **extraction root**, which still contains
+  npm's `package/` wrapper, while `run_full_registry_collect` passes `…/package`. Paths read
+  `package/publish-next.js`, matched no pattern, resolved no seed, and **the whole exclusion silently
+  did nothing** while every test passed (unit fixtures put files at the tempdir root). Fixed inside
+  the module via `package_root()`. **Recorded but NOT fixed: every Layer 1 finding's `file` field is
+  `package/`-prefixed on the default CLI path and unprefixed under `--full`.**
+- **Three test pins added, each mutation-verified.** Two guarded a real decision and asserted nothing:
+  `obfuscation_long_base64_literal_is_suspect` checked only the *message*, so it passed identically
+  before and after v19's INFO demotion while its name and comment both said SUSPECT — the shape that
+  gets "restored" by mistake. `ioc_hash_alone_still_blocks` `include_str!`d its **own source file**
+  and grepped 400 characters for `"BLOCK"`. Both replaced; demoting the IOC branch now fails two
+  tests and re-promoting base64 fails one, and all pass restored.
+- **One delta that is registry DRIFT, not this pass.** Arm F/B `B3` false hits went 1 → **2**:
+  `nodemailer` was republished between the v19 run (2026-08-10) and this one, restructuring into
+  `dist/cjs`+`dist/esm`, which `version_diff` reports as newly introduced `process.env` in new files;
+  its `network_imports` finding vanished at the same time. It was an accused FP before and after via
+  a different check, so the package count is unaffected. **Arms B and F hit the live registry —
+  attribute every delta on a check a pass did not touch before quoting a headline.**
+- **Metric movement that is NOT recall movement.** Arm D `E1` fires 174 → 171: three packages
+  (`@emilgroup/tenant-sdk`, `@emilgroup/public-api-sdk-node`, `@emilgroup/insurance-sdk-node`) lose
+  E1 from `detected_vectors` while staying **TRUE_POSITIVE** via `B1;B2`. Arm D `B2` fires 299 → 299
+  confirms the network guard is inert on the local path — the floor mechanism verified in situ.
+- **Two limits to state honestly.** (1) **The establishment guard's *discrimination* is unmeasured.**
+  It is *safe* in every arm, but structurally: arms D/E have no registry path, and `network_imports`
+  fires on **zero** of arm B's 35 malicious entries — the only malicious registry-path corpus. The
+  "malicious sole-accusers are fresh spam names" rationale rests on `is_established` requiring age
+  ≥365d **and** ≥10 versions, which fresh packages fail. Sound, but not demonstrated. (2) **The
+  remaining 29.6% cannot be closed by a third demotion at this floor** — the four residual
+  `obfuscation` cases split into bare `eval()` (lift 1.81) and `Function()`-ctor (1.54), and a
+  solitude-gated demotion takes arm D to **85.6%**, below 86.8%, with no registry path to rescue it.
+  Coverage's problem, not calibration's — items 7, 7b, 8.
+- **Refactor: `is_accusing` hoisted to `models`** beside `verdict_from_findings`. Two consumers must
+  agree on what an accusation is (the eval harness, and now `finish_scan`); v19 collapsed four copies
+  of the verdict rule for exactly this reason. `finish_scan`'s three trailing context `Option`s became
+  a `ScanContext` struct — clippy's `too_many_arguments` at 8/7 forced it, and it groups better.
+- **⚠ READ THIS BEFORE ACTING ON A REQUEST THAT CITES `eval/REPORT.md` VERSIONS.** The v20 request
+  asked for three fixes that were **all already implemented** — signatures expired-key (v18), worm
+  single-category BLOCK (v18, though its build-path half was genuinely missing), and hex-identifier
+  density (v18). The cause is worth remembering: **`Cargo.toml`'s `version` has been `0.1.0` across
+  v17, v18 and v19**, and so is `provenance.tool_version` in every `metrics.json`. The v17/v18/v19
+  labels exist ONLY as `eval/baseline/<ver>/` directory names and this changelog. So "the v0.1.0
+  REPORT.md" is the *current* one and already contains the later sections. **Verify implementation
+  status in the source before planning a fix pass.** Also: the request predicted arm B recall would
+  fall 91.4% → ~25.7%; it actually landed at **85.7%**, because v18 fixed real A1 name detection in
+  the same pass. The honest comparison is **25.7% → 85.7%**.
 
 ### v19: Capability-vs-attack severity model — arm F FPR 70.4% → 48.1% (2026-08-10)
 Scope: user asked to make the project "perfect — coverage to all attack surface, increase analysis
@@ -658,6 +790,11 @@ Local test: npm-pre-scan --local <dir>
   maintainer (A3)      3 of 27 packages   -> CAPABILITY (zero true positives, ever)
   shell_exfil          1 (shadowsocks)    unchanged — lift 5.14, it earns its severity
   version_diff         1 (bcrypt)         unchanged — too few observations to calibrate
+  network_imports      4 of 27 packages   v20: -> CAPABILITY only when it is the SOLE
+                                          accusation AND the package is established.
+                                          NOT demoted wholesale — lift 2.35 (34.9% mal
+                                          vs 14.8% benign), comparable to shell_exfil.
+                                          Registry path only; `None` never demotes.
   Result: arm F any-finding FPR 70.4% -> 48.1%, BLOCK-level still 0.0%, and NO recall
   lost (arm D 87.6%, arm E 97.5%). What still fires genuinely has the capability —
   going lower needs dynamic corroboration, i.e. coverage (items 7-9), not calibration.
@@ -870,12 +1007,11 @@ per-vector functional check, never as a precision result.
 
 Three caveats an agent must not lose:
 
-- ⚠ **`dummy_timebomb` expires 2026-09-01** — about four weeks out as of 2026-08-04. After that its
-  payload fires at baseline too, the D1 diff goes empty, and D1 detection silently drops to zero,
-  taking `d1_timebomb_live_run` and `dummy_timebomb_full_pipeline_flags_risk` with it. **D1 is the
-  flagship of the project's stated core contribution**, so this is now a dated item at the top of the
-  Task Checklist. Preferred fix: **pin the harness clock**, not re-date the fixture — re-dating buys
-  a year and then recurs.
+- ✅ **`dummy_timebomb`'s 2026-09-01 expiry is closed, and v20 proved it.** v18 pinned the harness
+  clock (libfaketime in every Layer 3 scenario) rather than re-dating the fixture. Arm C ran on
+  **2026-09-07 — six days past the trigger — and D1 still fires**, so the differential really is
+  date-invariant. No pre-deadline run could have shown that. Do not "fix" this by re-dating the
+  fixture; that buys a year and then recurs.
 - **`dummy_persistence` is mis-attributed to D2.** Its `.bashrc` write is unconditional at import, so
   the Layer 3 env scenario claims credit for behaviour it did not trigger.
 - **`dummy_slow_exfil` takes 467 s** (24× the arm C median) from 35 sequential sinkholed DNS lookups.
@@ -883,7 +1019,7 @@ Three caveats an agent must not lose:
 
 ---
 
-## Evaluation — DONE (v17; harness built, six arms run, weaknesses documented)
+## Evaluation — DONE (harness built v17; all six arms re-run at v18, v19 and v20)
 
 `npm-pre-scan --eval <manifest>` batch-scans a ground-truth corpus and emits `records.jsonl` (lossless
 per-package records), `results.csv` (45 cols), `findings.csv` (tidy, one row per finding),
@@ -892,15 +1028,16 @@ safety posture: `eval/README.md`. Results and ranked weaknesses: **`eval/REPORT.
 
 > **The arm table lives in `README.md`, section `EVALUATION`**, with the canonical, most detailed
 > version (including per-arm cost) in `eval/REPORT.md`, section `What was measured`. Committed
-> before/after baselines for the six arms: `eval/baseline/v17/arm{A..F}.metrics.json`.
+> before/after baselines for the six arms: `eval/baseline/v{17,18,19,20}/arm{A..F}.metrics.json`.
 
 Agent-facing notes on reading those numbers:
 
-- **The headline FPR is arm F's, and it is now 70.4% (19/27) — down from 96.3%.** Full pipeline,
-  benign-only corpus. Quote the BLOCK-level figure alongside it, because they now differ sharply:
-  **0.0% BLOCK-level** versus 70.4% any-finding. Arm B's FPR is a different arm and a different
-  denominator (30 benign-labelled entries: the 27 parents plus three reclaimed names carried in
-  `real_malicious_holders.tsv`) — 93.3% in v17, 66.7% in v18. Always give the denominator.
+- **The headline FPR is arm F's, and as of v20 it is 29.6% (8/27)** — from 96.3% (v17) → 70.4%
+  (v18) → 48.1% (v19) → **29.6%**. Full pipeline, benign-only corpus. Quote the BLOCK-level figure
+  alongside it, because they differ sharply: **0.0% BLOCK-level** versus 29.6% any-finding. Arm B's
+  FPR is a different arm and a different denominator (30 benign-labelled entries: the 27 parents plus
+  three reclaimed names carried in `real_malicious_holders.tsv`) — 93.3% v17, 66.7% v18, 46.7% v19,
+  **30.0% v20**. Always give the denominator.
 - **Arm B is `L0 (malicious) / L0+L1 (benign)`**, not `L0+L1`. All 38 malicious holder entries were
   Layer 0 only (`by_layer[1]: ran 27, skipped 38`), so its 91.4% recall is a Layer 0 figure.
 - **Arm C is 16/16 packages, 15/16 vectors** (B3 has no path through the harness), and only
@@ -924,19 +1061,18 @@ Agent-facing notes on reading those numbers:
   real-malware recall is unmeasured.
 
 Comparison context: OSCAR reports F1 0.95 (npm) on a real benchmark. Arm D's Layer-1-only F1 is 0.94
-on 499 real malicious packages — but that arm has no benign control, and arm F still shows a **70.4%
-any-finding FPR** on legitimate packages after v18 (arm B: 66.7% on its mixed 30-entry benign set).
-So **no headline F1 should be claimed until arm D has a benign control** — item 4's recalibration
-landed in v19 and took arm F to 48.1%, but an F1 over any-finding verdicts is still dominated by
-SUSPECT-level capability findings, and arm D cannot produce a precision figure at all. The BLOCK-level story is now clean (0% FPR), but an F1 computed over any-finding verdicts
-would still be dominated by SUSPECT noise, and arm D would have to be re-run against a benign
-control to mean anything at all.
+on 499 real malicious packages — but **that arm has no benign control**, so it cannot produce a
+precision figure at all, and arm F still shows a **29.6% any-finding FPR** on legitimate packages
+after v20 (arm B: 30.0% on its mixed 30-entry benign set). So **no headline F1 should be claimed
+until arm D has a benign control.** The BLOCK-level story is clean (0.0% FPR on both benign arms
+since v18), but an F1 computed over any-finding verdicts is still dominated by SUSPECT-level noise.
+This is the single most valuable missing measurement in the project.
 
 ---
 
 ## Task Checklist
 
-### ⏰ DATED — DONE in v18 (was: do this before 2026-09-01)
+### ⏰ DATED — DONE in v18, and PROVEN IN THE FIELD at v20 (was: do this before 2026-09-01)
 - [x] 0. **`dummy_timebomb` expires 2026-09-01 — NEUTRALISED in v18 by pinning the harness
         clock.** The hazard was: once the real date crossed the fixture's trigger, its payload
         would fire at baseline too, the D1 diff would go empty, and **D1 detection would
@@ -952,6 +1088,11 @@ control to mean anything at all.
         by `tests/layer3_clock_pin.rs` (the live D1 tests do fail loudly, but they are
         `#[ignore]`d, so a plain `cargo test` would not have caught the drift).
         Changing the script requires a Docker image rebuild — it is COPY'd in.
+        **v20 CONFIRMS THE FIX EMPIRICALLY.** Arm C was re-run on **2026-09-07, six days
+        past the fixture's trigger date**, and `dummy_timebomb` is still detected via D1
+        (it also picked up C1 this run). No run before the deadline could establish that
+        the differential is genuinely date-invariant; this one does. The dated hazard is
+        closed, not merely deferred.
 
 ### Layer 0 follow-up
 - [x] Build & verify dummy_dep_confusion (A2)
@@ -1008,6 +1149,16 @@ control to mean anything at all.
         shipping a release script); exclude build tooling unless reached from an install hook.
         Note `fabric` passes Layer 2 AND Layer 3 cleanly in arm F — the BLOCK is Layer 1's alone,
         with no dynamic behaviour to corroborate it. Finding split: `fabric` 1, `node-sass` 3.
+        **First half done in v18 (per-category SUSPECT); the BUILD-PATH half only landed in
+        v20** — it had been marked complete while no path predicate existed anywhere in the
+        module. Two corrections v20 had to make to the wording above:
+        (a) "reached from an **install hook**" breaks the arm D floor — 13 malicious packages
+        declare a root `publishScript.js` as `main` with no hook at all, so reachability must
+        span hooks ∪ `main` ∪ `bin` ∪ `exports`;
+        (b) the ≥2-category aggregate also had to require **co-location in one file**, since it
+        accumulated package-wide and two ordinary release scripts could BLOCK a legitimate
+        package. `fabric` is now fully clean; `node-sass` keeps 3 findings by design
+        (`lib/` is runtime code, and its `scripts/util/*` ARE hook-reachable).
 - [x] 3. obfuscation: add a hex-IDENTIFIER-density check (`_0x[0-9a-f]{4,}` count / `0x` literal
         ratio). The v14 hex 4→8 change let the javascript-obfuscator family through, and
         ansi-styles@6.2.2 (real Sept-2025 clipper) passes all four layers.
@@ -1022,6 +1173,10 @@ control to mean anything at all.
 - [x] 6. typosquat/namespace: don't accuse an established package (use the age/downloads already fetched).
 - [ ] 7. D3: require one of L2's stronger sub-signals rather than a bare import_side_effect
         (`nodemailer` FP — the fuzzer caused the network activity it flagged).
+        **Now one of only three remaining FP sources, and the cheapest of them.** After v20,
+        arm F's 8 false positives are: `obfuscation` ×4 (NOT demotable at this floor — measured,
+        see item 11), `install_script`+`worm_signature` on `node-sass` (by design),
+        `version_diff` ×2, and this one.
 - [ ] 8. Vendor dependencies into the L2/L3 mount so dep-bearing packages are analysable at all
         (11/27 legitimate were dependency-free, of which only 10 completed a valid run; 28/40
         malicious). Separately, cap the damage when a dependency-free package still exhausts the
@@ -1030,6 +1185,15 @@ control to mean anything at all.
         version_diff has a path through the harness (B3 is 0/1 in arms B, C and E for lack of a
         path, not for lack of a rule); fix dummy_persistence's D2 mis-attribution; give arm E's
         B4 case (`node-ipc@12.0.1`) a route to fire B4 rather than being rescued by B2/C1.
+- [x] 11. **Do NOT attempt a third static demotion — measured dead end (v20).** After v20 the
+        residual arm F false positives are dominated by `obfuscation` SUSPECT on four packages
+        (`jquery`, `babel-cli` via bare `eval()`, lift 1.81; `lodash`, `d3` via the `Function()`
+        constructor with a string body, lift 1.54). A solitude-gated demotion of those two
+        sub-rules takes arm D to **427/499 = 85.6%**, below the 86.8% floor, and the
+        establishment guard cannot rescue it because arm D has no registry path at all. This is
+        recorded as DONE-as-in-SETTLED, not as work to do: **calibration is exhausted at this
+        recall floor.** The remaining gains are items 7, 7b and 8.
+
 - [x] 10. **Revisit severity assignment and score aggregation TOGETHER.** DONE in v19 as the
         capability tier + `capability_cluster` escalation. Severity is now three-tier in practice
         (capability / accusation / block); the noisy-OR `risk_score` is still reported-not-gating and

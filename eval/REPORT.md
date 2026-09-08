@@ -503,6 +503,209 @@ essentially no new false positives, because Layers 0 and 1 had already accused n
 
 ---
 
+## v20 — precision pass 2: false positives cut again, recall untouched
+
+Queue items **4 (continued) and 9 (partial)**, plus the unimplemented half of item 2. Items 7, 8
+and 7b remain open. Baselines in `eval/baseline/v20/`.
+
+**Headline: arm F any-finding FPR 48.1% → 29.6% and arm B 46.7% → 30.0%, with every recall figure
+bit-identical to v19.** Arm D stayed at exactly 437/499 true positives (87.6%), arm E at 39/40
+(97.5%), arm C at 16/16, and BLOCK-level FPR remained **0.0%** in every arm. Arm F's clean count
+went 14 → **19** of 27; arm B's true negatives 16 → 21.
+
+### What the measurement said, and why it overturned a v19 decision
+
+Decomposing arm F's 13 remaining false positives per check, and re-running v19's own lift method
+(arm D's 499 real malicious samples against arm F's 27 legitimate parents), found that **the largest
+single false-positive source in the tool was a rule v19 itself had introduced**:
+
+| rule | malicious | benign | lift | sole accusing detector |
+|---|---|---|---|---|
+| `capability_cluster` | 10/499 (2.0%) | 5/27 (**18.5%**) | **0.11** | **0 of 539 malicious**; 1 benign (`mongoose`) |
+| `network_imports` | 174/499 (34.9%) | 4/27 (14.8%) | 2.35 | 13 malicious; 3 benign |
+
+`capability_cluster` is inverted by a factor of nine — far worse than the lift < 1.2 bar v19 used to
+demote four rules — and across arms B, C, D, E and F it was the sole accusing detector on exactly
+one package, which is legitimate. It also has **no operating point at all**: capability counts are
+bounded at 3 in *both* corpora (benign `{0:13, 1:7, 2:2, 3:5}`, malicious `{0:289, 1:153, 2:47,
+3:10}`), so the threshold is inverted at 3 and unreachable dead code at 4. The capability sets
+overlap almost entirely — benign clusters draw `{dynamic-require, env-read, install-hook,
+maintainer-change}` and malicious ones `{dynamic-require, encoded-blob, env-read}` — which is why
+counting members of a pool of individually-inverted signals cannot discriminate.
+
+**v19's conjunction hypothesis is refuted, not mis-tuned.** The capability *tier* stays; the
+conjunction rule is removed. It was removed rather than demoted to INFO because the stated reason
+for emitting a real finding — keeping `by_vector`/`sole_detector` consistent with `classification` —
+holds only while the finding accuses, and `is_accusing` does not count INFO. A demotion pays the
+full metric cost of removal and keeps the code.
+
+`network_imports` is the opposite case: it genuinely discriminates (lift 2.35, comparable to
+`shell_exfil`'s ~4.3, which v19 deliberately kept), so demoting it wholesale would be wrong. But as
+a **sole** signal it inverts, and every legitimate package it fires on is a library whose *purpose*
+is network I/O. It is now demoted to a `network-io` capability only when it is the only accusation
+**and** the package is itself established.
+
+### Two places where the requested fix, implemented literally, breaks a recall floor
+
+Both were caught by measuring before writing code, and both are pinned by tests carrying the
+numbers so a future simplification fails in `cargo test` rather than six hours into an arm run.
+
+- **Solitude alone as the `network_imports` gate.** Applied everywhere it costs arm D 19 records
+  (437 → 418, 83.8%) and arm E one (39 → 38, 95.0%) — *both* floors. The establishment gate confines
+  it to the registry path, and the three-state `Option<bool>` is the load-bearing part: `None` means
+  "never asked" and never demotes. All 539 arm D/E entries are local samples with no registry
+  document, so the guard is structurally incapable of firing there — the floors hold **by
+  construction**, which the arm D run confirmed (`B2` fires 299 → 299, unchanged).
+- **"Unless reached from an install hook" as the `worm_signature` exclusion.** 13 malicious packages
+  ship exactly `package.json` plus a root `publishScript.js`, declare it as `main`, and have **no
+  install hook at all**; their entire Layer 1 output is one `self_propagation` finding on that file.
+  A hooks-only rule loses all 13: arm D 87.58% → **84.97%**, against an 86.8% floor. Reachability
+  therefore spans **install hooks ∪ `main` ∪ `bin` ∪ `exports`**, which is also the precise
+  definition of build tooling — code that ships in the tarball but is not what a consumer executes.
+  Measured loss on that basis: **zero** across arms B, C, D and E.
+
+### Why the guard is safe for a compromised established package
+
+That class — `ansi-styles@6.2.2`, the Sept-2025 chalk/debug crypto clipper — is the most dangerous
+one, and suppressing a signal for established packages could plausibly weaken it. It does not, for a
+structural rather than a lucky reason: **`version_diff` is a built-in veto.** It emits SUSPECT for a
+*newly introduced* network import and runs on exactly the path where the guard is active, so the
+guard only ever suppresses an import that is **not new**. A compromise that *adds* network I/O — the
+definition of the attack class — breaks solitude and the guard stands down.
+
+`ansi-styles@6.2.2` confirms it twice over: its only finding is an `obfuscation` BLOCK for 314
+distinct `_0x…` identifiers, and `network_imports` never fires on it at all (the clipper hooks
+browser globals rather than requiring an HTTP client).
+
+### Package-level attribution, arm F
+
+Cleared: **`axios`, `fabric`, `http-proxy`, `mongoose`, `proxy`**. **Newly accused: none.**
+
+| package | v19 | v20 |
+|---|---|---|
+| `axios` | `capability_cluster`, `network_imports` | **clean** |
+| `mongoose` | `capability_cluster` | **clean** |
+| `http-proxy` | `network_imports` | **clean** |
+| `proxy` | `network_imports` | **clean** |
+| `fabric` | `capability_cluster`, `worm_signature` | **clean** |
+| `bcrypt` | `capability_cluster`, `version_diff` | `version_diff` |
+| `node-sass` | `capability_cluster`, `install_script`, `worm_signature` | `install_script`, `worm_signature` |
+| `nodemailer` | `network_imports`, `trigger_on_use` | `trigger_on_use`, `version_diff` |
+| `jquery`, `lodash`, `d3`, `babel-cli` | `obfuscation` | `obfuscation` |
+| `shadowsocks` | `shell_exfil` | `shell_exfil` |
+
+Per-vector false hits: `META` **5 → 0**, `B2` 9 → 5, `E1` 2 → 1, `B3` 1 → **2**, `B1` and `D3`
+unchanged at 1.
+
+**`node-sass` is the documented limit of the worm fix.** Its `lib/extensions.js` is shipped runtime
+code, not build tooling, and its `scripts/util/{proxy,rejectUnauthorized}.js` are genuinely
+*reachable* from `"install": "node scripts/install.js"`, so all three findings correctly survive —
+and it keeps `install_script` regardless. No defensible path pattern clears it.
+
+### One delta that is registry drift, not this pass
+
+**`B3` false hits went 1 → 2, and that is not a regression.** `nodemailer` was republished between
+the v19 arm run (2026-08-10) and this one: it restructured into `dist/cjs` and `dist/esm`, which
+`version_diff` reports as newly introduced `process.env` access in new files. Its `network_imports`
+finding disappeared entirely at the same time. `nodemailer` was an accused false positive before and
+after, via a different check, so the package count is unaffected — but the per-check figure moves for
+reasons this pass did not cause. Arms B and F hit the live registry and every delta on a check this
+pass did not touch must be attributed this way before a headline is quoted.
+
+### The E1 metric movement is not a recall movement
+
+`E1` fires fell 174 → 171 in arm D. Three packages — `@emilgroup/tenant-sdk`,
+`@emilgroup/public-api-sdk-node`, `@emilgroup/insurance-sdk-node` — lose E1 from
+`detected_vectors` while remaining **TRUE_POSITIVE** via `B1;B2`. Recorded here so the per-vector
+drop is not later misread as lost detection.
+
+### v17 → v20 side by side, and what the recall changes actually mean
+
+All figures from `eval/baseline/v17|v18|v19|v20/arm{A..F}.metrics.json`. Arms B, D, E and F need
+network; C, E and F need Docker; all six were re-run at v20.
+
+**False-positive rate (any finding)** — the metric the three fix passes targeted:
+
+| arm | corpus | v17 | v18 | v19 | **v20** |
+|---|---|---|---|---|---|
+| B | 30 benign-labelled entries, registry | 93.3% | 66.7% | 46.7% | **30.0%** |
+| F | 27 legitimate parents, all 4 layers | 96.3% | 70.4% | 48.1% | **29.6%** |
+| A | 27 parents, name-only | 7.4% | 3.7% | 3.7% | **3.7%** |
+| C | 3 benign dummies | 0.0% | 0.0% | 0.0% | **0.0%** |
+
+**False-positive rate (BLOCK level only)** — settled at v18 and held since:
+
+| arm | v17 | v18 | v19 | **v20** |
+|---|---|---|---|---|
+| B | 46.7% | 0.0% | 0.0% | **0.0%** |
+| F | 44.4% | 0.0% | 0.0% | **0.0%** |
+
+**Recall (any finding)**, with false-positive counts alongside so the trade is visible:
+
+| arm | v17 | v18 | v19 | **v20** | FP count v17 → v20 |
+|---|---|---|---|---|---|
+| A | 1.6% | 1.3% | 1.3% | **1.3%** | 2 → **1** |
+| B | 91.4% | 85.7% | 85.7% | **85.7%** | 28 → **9** |
+| C | 100.0% | 100.0% | 100.0% | **100.0%** | 0 → **0** |
+| D | 88.8% | 88.8% | 87.6% | **87.6%** | 0 → **0** |
+| E | 95.0% | **97.5%** | 97.5% | **97.5%** | 0 → **0** |
+| F | — | — | — | — | 26 → **8** |
+
+Precision, arm B: 53.3% → 47.4% → 56.2% → **66.7%**. Arm A: 99.94% → **99.96%**.
+
+#### The recall figures that fell are illusion removal, not regression
+
+Three numbers in that table went down, and all three did so *before* v20. None is a detection loss.
+
+1. **Arm B recall 91.4% → 85.7%, and true positives 32 → 18 (v18).** This is the single most
+   misread number in the project. **23 of v17's 32 "true positives" were the `signatures` check
+   firing on npm's own *security-holding stub***, not on any name detection — post-hoc takedown
+   information a consumer already gets free from an advisory feed. `signatures` had a time bomb: it
+   filtered expired keys *out* of the lookup, so any package not republished since npm's 2025-01-29
+   key rotation matched no key, was never verified, and fell through to an unconditional BLOCK.
+   Fixing it necessarily removed those credits. Mechanism-attributed, **v17's real name-detection
+   recall was 25.7% at 6.7% FPR**, so the honest comparison is **25.7% → 85.7%** — a large
+   *improvement*, achieved in the same pass by fixing A1 suffix squats and absent parents. All 18
+   current true positives come from A1.
+   The 32 → 18 drop in TP count is the same fact seen from the other side, and it is accompanied by
+   `ARTIFACT_FN` going **0 → 14**: with the stubs no longer BLOCK'd, a clean verdict on a defanged
+   takedown stub is now correctly excluded from recall's denominator instead of inflating it. Arm
+   B's denominator is honestly 21, not 35.
+2. **Arm D recall 88.8% → 87.6% (v19).** 1.2 points, six packages, the cost of demoting four
+   measured-non-discriminating rules to capabilities — taken deliberately against a stated 2-point
+   floor, in exchange for arm F 70.4% → 48.1%. Held exactly at v20.
+3. **Arm A true positives 3451 → 2841 (v18).** The distance-2 branch had no name-length guard, so a
+   3-character name sat within two edits of much of the top list by chance. **608 of the 610 lost
+   detections have a bare name ≤4 characters** — the coincidental matches the guard exists to
+   remove. Precision rose 99.94% → 99.96% and FPR halved.
+
+**v20 itself cost no recall at all.** Every recall figure came back bit-identical to v19 — arm D
+437/499, arm E 39/40, arm C 16/16, arm B 18, arm A 2841 — while arm F fell 48.1% → 29.6% and arm B
+46.7% → 30.0%. That is the whole result: the two rules it recalibrated were measured *inverted* or
+inverted-when-sole, so removing their accusations subtracted false positives without subtracting
+detections.
+
+### What this pass does NOT establish
+
+- **The establishment guard's *discrimination* is unmeasured.** It is *safe* in every arm, but for a
+  structural reason: arms D and E have no registry path at all, and `network_imports` fires on **zero**
+  of arm B's 35 malicious entries — the only malicious registry-path corpus. The rationale that
+  malicious sole-accusers are freshly published spam names rests on `is_established` requiring both
+  age ≥365 days and ≥10 versions, which fresh packages fail. That argument is sound but **not
+  demonstrated by these arms**. Do not write it up as measured.
+- **The remaining 29.6% cannot be closed by a third demotion at this recall floor.** What is left in
+  arm F is four packages on `obfuscation` SUSPECT, from two sub-rules: bare `eval()` (`jquery`,
+  `babel-cli`; 13.4% malicious, lift 1.81) and the `Function()` constructor with a string body
+  (`lodash`, `d3`; 11.4%, lift 1.54). A solitude-gated demotion of those two takes arm D to 427/499
+  = **85.6%**, below the floor, and the establishment gate cannot rescue it because arm D has no
+  registry path. This confirms v19's own closing conclusion: the ceiling is coverage's problem, not
+  calibration's — items 7, 7b and 8.
+- **The default CLI's `file` paths are still `package/`-prefixed.** Fixing the worm exclusion
+  surfaced that `run_layer1` passes the tarball extraction root while `run_full_registry_collect`
+  passes `…/package`, so every Layer 1 finding's `file` field differs between `npm-pre-scan X` and
+  `npm-pre-scan --full X`. Worked around inside `worm_signature` via `package_root()`; the wider
+  inconsistency is recorded, not fixed.
+
 ## v19 — capability model: false positives nearly halved at no recall cost
 
 Queue items **4 and 10** (2026-08-10). Items 7, 8, 9 remain open. All six arms re-run against
