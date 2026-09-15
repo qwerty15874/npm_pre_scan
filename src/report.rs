@@ -298,6 +298,11 @@ pub struct FullScan {
     /// The offline sandbox cannot install dependencies, so a caller needs this to
     /// know whether a Layer 2/3 result means anything.
     pub declared_deps: Option<usize>,
+    /// Whether dependencies were resolved on the host and mounted into the
+    /// dynamic layers. A dependency-bearing package is analysable when this is
+    /// true and is not when it is false, which is what a caller needs in order
+    /// to decide whether a Layer 2/3 silence is evidence.
+    pub vendored: bool,
 }
 
 /// Time one layer, or skip it if the mask says so.
@@ -338,6 +343,8 @@ fn read_declared_deps(dir: &Path) -> Option<usize> {
 struct ScanContext {
     registry_status: Option<crate::registry::FetchStatus>,
     declared_deps: Option<usize>,
+    /// Whether host-vendored dependencies were mounted for the dynamic layers.
+    vendored: bool,
     /// Whether the package is itself established (`crate::checker::is_established`).
     /// `None` means it was never asked, which never demotes anything — see
     /// [`demote_sole_network_import`].
@@ -357,11 +364,13 @@ fn finish_scan(
     let ScanContext {
         registry_status,
         declared_deps,
+        vendored,
         established,
     } = ctx;
 
     let mut layers = layers;
     demote_sole_network_import(&mut layers, established);
+    demote_self_referential_d3(&mut layers, name);
 
     let mut report = aggregate(
         name,
@@ -386,6 +395,7 @@ fn finish_scan(
         layer_ms,
         registry_status,
         declared_deps,
+        vendored,
     }
 }
 
@@ -514,6 +524,195 @@ fn demote_sole_network_import(layers: &mut [Option<CheckResult>; 4], established
     }
 }
 
+/// Demote a D3 (`trigger_on_use`) accusation whose every observed side effect
+/// points back at the package itself — its own API host, or its own binary.
+///
+/// D3's premise is structurally weak in a way no threshold fixes: the Layer 3
+/// fuzz scenario *invokes the package's exports*, so for any library whose
+/// purpose is network I/O, "an export touched the network" is behaviour the
+/// harness caused and then reported as suspicious. Measured on `nodemailer`,
+/// whose exports are fuzzed and whose only egress is:
+///
+/// ```text
+/// dns:api.nodemailer.com
+/// connect:127.0.0.1:65535      <- the in-container sinkhole, not a real peer
+/// ```
+///
+/// The discriminator is the one `eval/REPORT.md` asks for — an egress host
+/// *unrelated to the package's stated purpose* — read from the evidence the
+/// finding already carries. `api.nodemailer.com` is related; the D3 fixture's
+/// `evil.example.com` is not, so `dummy_api_triggered` keeps its detection and
+/// arm C's only D3 true positive survives.
+///
+/// Deliberately narrow, on three axes:
+/// - only findings that came from a bare `import_side_effect` (hence
+///   [`crate::layer3::classify::L2_CHECK_KEY`]); a credential read or a
+///   sensitive write reaching D3 is untouched;
+/// - only when EVERY resolved name is self-referential, so one unrelated
+///   lookup alongside a related one still accuses;
+/// - only when every connect is loopback. Under `--network=none` the sinkhole
+///   answers 127.0.0.1, so a real beacon still shows its `dns:` line — a
+///   connect to anything else means this rule has no business demoting.
+fn demote_self_referential_d3(layers: &mut [Option<CheckResult>; 4], package: &str) {
+    use serde_json::Value;
+
+    let Some(token) = identity_token(package) else {
+        return;
+    };
+
+    let is_bare_d3 = |f: &Finding| {
+        f.get("vector").and_then(|v| v.as_str()) == Some("D3")
+            && f.get(crate::layer3::classify::L2_CHECK_KEY)
+                .and_then(|v| v.as_str())
+                == Some("import_side_effect")
+    };
+
+    for r in layers.iter_mut().flatten() {
+        let mut touched = false;
+        for f in r
+            .findings
+            .iter_mut()
+            .filter(|f| is_bare_d3(f) && crate::models::is_accusing(f))
+        {
+            if !side_effects_are_self_referential(f, &token) {
+                continue;
+            }
+            let original = f
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("import-phase side effect")
+                .to_string();
+            f.insert("severity".into(), Value::String("INFO".into()));
+            f.insert(
+                crate::models::CAPABILITY_KEY.into(),
+                Value::String("network-io".into()),
+            );
+            f.insert("downgraded_self_referential".into(), Value::Bool(true));
+            f.insert(
+                "message".into(),
+                Value::String(format!(
+                    "{} — downgraded: the fuzz scenario invoked this package's own \
+                     exports and the only egress was to a host bearing its own name, \
+                     so the harness caused the behaviour it would otherwise report. \
+                     An unrelated host, an IP literal, an encoded DNS label or a \
+                     credential read would all still accuse",
+                    original
+                )),
+            );
+            touched = true;
+        }
+        if touched {
+            r.verdict = crate::models::verdict_from_findings(&r.findings);
+            r.score = crate::models::score_findings(&r.findings);
+        }
+    }
+}
+
+/// The comparable form of a package name: scope dropped, non-alphanumerics
+/// removed, lowercased. `@ctrl/tinycolor` -> `tinycolor`. `None` when nothing
+/// usable remains, or when the token is too short to be evidence of anything
+/// (a two-character name would match far too many hostnames).
+fn identity_token(package: &str) -> Option<String> {
+    let bare = package.rsplit('/').next().unwrap_or(package);
+    let token: String = bare
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_lowercase();
+    (token.len() >= 4).then_some(token)
+}
+
+/// Whether everything a finding observed points back at the package itself.
+///
+/// Covers both dimensions the same structural failure shows up in, each
+/// measured on a real arm F false positive:
+///
+/// - **network** — `nodemailer`, whose fuzzed exports resolved
+///   `api.nodemailer.com` and connected only to the sinkhole;
+/// - **process** — `ffmpeg`, whose fuzzed exports spawned `/bin/ffmpeg`,
+///   `/usr/bin/ffmpeg`, `/usr/local/bin/ffmpeg` … a PATH search for the one
+///   binary the package exists to run.
+///
+/// Both are the harness causing the behaviour it then reports. `ffmpeg` only
+/// became visible once item 8 let the dynamic layers reach it, which is a
+/// coverage result, not a regression.
+///
+/// Vacuously false when nothing was observed — this rule exists to explain
+/// activity, not silence.
+fn side_effects_are_self_referential(f: &Finding, token: &str) -> bool {
+    // A BLOCK `import_side_effect` means a sensitive read was involved, which
+    // also raises its own `sensitive_file_read` finding. Never excused here.
+    if f.get("severity").and_then(|v| v.as_str()) != Some("SUSPECT") {
+        return false;
+    }
+    let Some(evidence) = f.get("evidence").and_then(|v| v.as_array()) else {
+        return false;
+    };
+    let lines: Vec<&str> = evidence.iter().filter_map(|v| v.as_str()).collect();
+    let of = |p: &'static str| -> Vec<&str> {
+        lines.iter().filter_map(|l| l.strip_prefix(p)).collect()
+    };
+
+    let (dns, connects, procs) = (of("dns:"), of("connect:"), of("proc:"));
+    if dns.is_empty() && connects.is_empty() && procs.is_empty() {
+        return false;
+    }
+
+    // Any durable write or delete is outside this rule's remit. The container's
+    // own scaffolding — libfaketime's /dev/shm segments and the fuzzer's temp
+    // files — is not the package's doing and must not block the demotion.
+    let ephemeral = |p: &str| {
+        p.starts_with("/dev/shm/") || p.starts_with("/tmp/") || p == "/dev/null"
+    };
+
+    dns.iter().all(|host| host_matches_identity(host, token))
+        && connects.iter().all(|c| is_loopback_connect(c))
+        && procs.iter().all(|p| proc_matches_identity(p, token))
+        && of("write:").iter().all(|p| ephemeral(p))
+        && of("delete:").iter().all(|p| ephemeral(p))
+}
+
+/// A spawned executable belongs to the package when its basename carries the
+/// identity token — `/usr/bin/ffmpeg` for `ffmpeg`. Basename rather than whole
+/// path, so a payload cannot qualify by living in a conveniently-named
+/// directory.
+fn proc_matches_identity(path: &str, token: &str) -> bool {
+    let base = path.rsplit('/').next().unwrap_or(path);
+    let base: String = base
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_lowercase();
+    base.contains(token)
+}
+
+/// A hostname belongs to the package when one of its labels contains the
+/// identity token — `api.nodemailer.com` for `nodemailer`. Label-wise rather
+/// than a bare substring test so `nodemailer.evil.com` still matches (the label
+/// is the package's) while a token buried in an unrelated TLD-ish string does
+/// not slip through on punctuation alone.
+fn host_matches_identity(host: &str, token: &str) -> bool {
+    host.split('.').any(|label| {
+        let label: String = label
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_lowercase();
+        label.contains(token)
+    })
+}
+
+/// `connect:<addr>:<port>` where the address is loopback. Everything else —
+/// including any public or link-local literal — is left to accuse.
+fn is_loopback_connect(connect: &str) -> bool {
+    let addr = match connect.rsplit_once(':') {
+        Some((a, _port)) => a,
+        None => connect,
+    };
+    let addr = addr.trim_matches(|c| c == '[' || c == ']');
+    addr == "::1" || addr.strip_prefix("127.").is_some_and(|r| !r.is_empty())
+}
+
 /// Aggregate a default name scan (Layer 0 + Layer 1) into a `RiskReport`.
 ///
 /// The default CLI path (`npm-pre-scan <pkg>`) does not go through
@@ -556,6 +755,61 @@ pub fn aggregate_name_scan(
     )
 }
 
+/// Wall-clock budget for host-side dependency resolution, in seconds. A stalled
+/// `npm install` must not become a new way to hang a batch — the very failure
+/// the per-package Docker budget exists to prevent.
+const VENDOR_TIMEOUT_SECS: u64 = 300;
+
+/// Resolve a package's dependencies on the host so the offline sandbox can load
+/// them, returning the directory holding the resulting `node_modules`.
+///
+/// npm does the resolution — hand-rolling one would be a second, worse npm —
+/// with `--ignore-scripts` so that nothing from the package or its dependency
+/// tree executes on the host. Install-hook behaviour is exactly what Layer 2
+/// exists to observe, and it must be observed inside the container.
+///
+/// Only `package.json` (and any lockfile) is copied across: npm resolves from
+/// the manifest, and copying the package's own code would put it on the host's
+/// install path for no benefit.
+///
+/// `None` means "run the layers exactly as before" — either there is nothing to
+/// vendor or resolution failed. A failure is never fatal to the scan; it just
+/// leaves the pre-existing coverage gap in place for that package.
+fn vendor_dependencies(dir: &Path) -> Option<tempfile::TempDir> {
+    if read_declared_deps(dir).unwrap_or(0) == 0 {
+        return None;
+    }
+    let vendor = tempfile::TempDir::new().ok()?;
+    std::fs::copy(dir.join("package.json"), vendor.path().join("package.json")).ok()?;
+    let lock = dir.join("package-lock.json");
+    if lock.is_file() {
+        let _ = std::fs::copy(&lock, vendor.path().join("package-lock.json"));
+    }
+
+    let argv = crate::docker::timeout_argv(
+        Some(VENDOR_TIMEOUT_SECS),
+        &[
+            "npm",
+            "install",
+            "--ignore-scripts",
+            "--omit=dev",
+            "--no-audit",
+            "--no-fund",
+            "--loglevel=error",
+        ],
+    );
+    let (program, args) = argv.split_first()?;
+    let status = std::process::Command::new(program)
+        .args(args)
+        .current_dir(vendor.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+
+    (status.success() && vendor.path().join("node_modules").is_dir()).then_some(vendor)
+}
+
 /// Run the local pipeline over a package directory, keeping per-layer detail.
 /// Layer 0 is never run — a local directory has no registry identity.
 pub fn run_full_local_collect(name: &str, dir: &Path, mask: LayerMask) -> FullScan {
@@ -565,8 +819,18 @@ pub fn run_full_local_collect(name: &str, dir: &Path, mask: LayerMask) -> FullSc
     let mask = mask.intersect(&APPLICABLE);
 
     let (l1, t1) = run_timed(mask, 1, || crate::run_layer1_local(name, dir));
-    let (l2, t2) = run_timed(mask, 2, || crate::run_layer2_local(name, dir));
-    let (l3, t3) = run_timed(mask, 3, || crate::run_layer3_local(name, dir));
+    // Resolve dependencies on the host only when a dynamic layer will actually
+    // use them; a Layer 0/1 scan must not pay for an `npm install`.
+    let vendor = (mask.wants(2) || mask.wants(3))
+        .then(|| vendor_dependencies(dir))
+        .flatten();
+    let vendor_path = vendor.as_ref().map(|v| v.path());
+    // One budget spans BOTH dynamic layers, so a package that stalls in each
+    // cannot cost twice the configured wall (see `docker::PACKAGE_TIMEOUT_ENV`).
+    crate::docker::start_package_budget();
+    let (l2, t2) = run_timed(mask, 2, || crate::run_layer2_vendored(name, dir, vendor_path));
+    let (l3, t3) = run_timed(mask, 3, || crate::run_layer3_vendored(name, dir, vendor_path));
+    crate::docker::clear_package_budget();
 
     finish_scan(
         name,
@@ -577,9 +841,56 @@ pub fn run_full_local_collect(name: &str, dir: &Path, mask: LayerMask) -> FullSc
         ScanContext {
             registry_status: None,
             declared_deps: read_declared_deps(dir),
+            vendored: vendor.is_some(),
             // No registry document for a local directory, so establishment is
             // unknown. `None` never demotes — this is what keeps the arm D/E
             // recall floors intact by construction.
+            established: None,
+        },
+    )
+}
+
+/// Run the local pipeline over a prev/latest directory pair.
+///
+/// Identical to `run_full_local_collect` on `latest`, except that Layer 1 also
+/// receives the `version_diff` (B3) findings from the transition. That check is
+/// the only one that needs two versions, and no other corpus shape can supply
+/// them — see `eval::corpus::Kind::Pair`.
+pub fn run_pair_local_collect(
+    name: &str,
+    prev_dir: &Path,
+    latest_dir: &Path,
+    mask: LayerMask,
+) -> FullScan {
+    const APPLICABLE: LayerMask = LayerMask([false, true, true, true]);
+    let mask = mask.intersect(&APPLICABLE);
+
+    let (l1, t1) = run_timed(mask, 1, || {
+        crate::run_layer1_local_paired(name, prev_dir, latest_dir)
+    });
+    let vendor = (mask.wants(2) || mask.wants(3))
+        .then(|| vendor_dependencies(latest_dir))
+        .flatten();
+    let vendor_path = vendor.as_ref().map(|v| v.path());
+    crate::docker::start_package_budget();
+    let (l2, t2) = run_timed(mask, 2, || {
+        crate::run_layer2_vendored(name, latest_dir, vendor_path)
+    });
+    let (l3, t3) = run_timed(mask, 3, || {
+        crate::run_layer3_vendored(name, latest_dir, vendor_path)
+    });
+    crate::docker::clear_package_budget();
+
+    finish_scan(
+        name,
+        mask,
+        APPLICABLE,
+        [None, l1, l2, l3],
+        [None, t1, t2, t3],
+        ScanContext {
+            registry_status: None,
+            declared_deps: read_declared_deps(latest_dir),
+            vendored: vendor.is_some(),
             established: None,
         },
     )
@@ -678,6 +989,7 @@ pub fn run_full_registry_collect(
             ScanContext {
                 registry_status: None,
                 declared_deps: None,
+                vendored: false,
                 established: None,
             },
         );
@@ -703,6 +1015,7 @@ pub fn run_full_registry_collect(
             ScanContext {
                 registry_status: status,
                 declared_deps: None,
+                vendored: false,
                 established: None,
             },
         )
@@ -769,8 +1082,15 @@ pub fn run_full_registry_collect(
     let (l1, t1) = run_timed(mask, 1, || {
         crate::layer1::run_layer1_extracted(name, &pkgdir, l1_info)
     });
-    let (l2, t2) = run_timed(mask, 2, || crate::run_layer2_local(name, &pkgdir));
-    let (l3, t3) = run_timed(mask, 3, || crate::run_layer3_local(name, &pkgdir));
+    let vendor = (mask.wants(2) || mask.wants(3))
+        .then(|| vendor_dependencies(&pkgdir))
+        .flatten();
+    let vendor_path = vendor.as_ref().map(|v| v.path());
+    // One budget spans BOTH dynamic layers (see the local path above).
+    crate::docker::start_package_budget();
+    let (l2, t2) = run_timed(mask, 2, || crate::run_layer2_vendored(name, &pkgdir, vendor_path));
+    let (l3, t3) = run_timed(mask, 3, || crate::run_layer3_vendored(name, &pkgdir, vendor_path));
+    crate::docker::clear_package_budget();
 
     let declared_deps = read_declared_deps(&pkgdir);
 
@@ -785,6 +1105,7 @@ pub fn run_full_registry_collect(
         ScanContext {
             registry_status: Some(status),
             declared_deps,
+            vendored: vendor.is_some(),
             // The guard's safety rests on `version_diff` breaking solitude when
             // the network capability is newly introduced, and `version_diff` is
             // skipped for a pinned scan (see `l1_info` above) — so a pinned scan
@@ -1110,6 +1431,7 @@ mod layer_mask_tests {
             ScanContext {
                 registry_status: None,
                 declared_deps: None,
+                vendored: false,
                 established: None,
             },
         );
@@ -1162,6 +1484,282 @@ mod layer_mask_tests {
 
 /// The v20 network-import guard. Replaces `mod capability_cluster_tests`, whose
 /// rule was removed as refuted — see [`crate::models::CAPABILITY_KEY`].
+#[cfg(test)]
+mod vendor_tests {
+    use super::*;
+
+    /// Host-side dependency resolution, the mechanism item 8 rests on.
+    ///
+    /// `#[ignore]`d because it reaches the live registry — the same convention
+    /// the Docker-gated tests use. Run with:
+    /// `cargo test --lib vendor_tests -- --ignored`
+    #[test]
+    #[ignore]
+    fn vendoring_resolves_a_dependency_tree_without_running_scripts() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"vendor-probe","version":"1.0.0","dependencies":{"debug":"^4.3.4"}}"#,
+        )
+        .unwrap();
+
+        let vendored = vendor_dependencies(dir.path()).expect("debug must resolve");
+        let modules = vendored.path().join("node_modules");
+        assert!(modules.join("debug").is_dir(), "the direct dependency");
+        assert!(
+            modules.join("ms").is_dir(),
+            "and its transitive one — a tree, not just the top level"
+        );
+    }
+
+    /// A package with nothing to vendor must not pay for an `npm install`, and
+    /// must keep behaving exactly as it did before item 8.
+    #[test]
+    fn a_dependency_free_package_is_not_vendored() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"leaf","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        assert!(vendor_dependencies(dir.path()).is_none());
+    }
+
+    /// An unreadable or absent manifest is not a crash and not a vendoring:
+    /// the layers simply run as they always did.
+    #[test]
+    fn a_missing_manifest_vendors_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(vendor_dependencies(dir.path()).is_none());
+    }
+}
+
+#[cfg(test)]
+mod d3_self_reference_guard_tests {
+    use super::*;
+    use crate::layer3::classify::L2_CHECK_KEY;
+    use crate::models::{CheckResult, Finding, Verdict, CAPABILITY_KEY};
+    use serde_json::Value;
+
+    /// A Layer 3 D3 finding in the shape `classify_scenario` actually emits.
+    fn d3(evidence: &[&str]) -> Finding {
+        let mut f = Finding::new();
+        f.insert("check".into(), Value::String("trigger_on_use".into()));
+        f.insert(L2_CHECK_KEY.into(), Value::String("import_side_effect".into()));
+        f.insert("severity".into(), Value::String("SUSPECT".into()));
+        f.insert("vector".into(), Value::String("D3".into()));
+        f.insert("scenario".into(), Value::String("D3".into()));
+        f.insert(
+            "message".into(),
+            Value::String("Import-phase side effect detected: network activity".into()),
+        );
+        f.insert(
+            "evidence".into(),
+            Value::Array(evidence.iter().map(|e| Value::String((*e).into())).collect()),
+        );
+        f
+    }
+
+    fn layers_with(f: Finding) -> [Option<CheckResult>; 4] {
+        let findings = vec![f];
+        [
+            None,
+            None,
+            None,
+            Some(CheckResult {
+                package: "p".into(),
+                verdict: crate::models::verdict_from_findings(&findings),
+                score: crate::models::score_findings(&findings),
+                findings,
+                note: None,
+            }),
+        ]
+    }
+
+    fn sev(layers: &[Option<CheckResult>; 4]) -> Option<String> {
+        layers[3].as_ref()?.findings[0]
+            .get("severity")?
+            .as_str()
+            .map(|s| s.to_string())
+    }
+
+    /// The measured false positive, captured from a live run on 2026-09-15:
+    /// the fuzz scenario invoked `nodemailer`'s exports, one resolved
+    /// `api.nodemailer.com`, and the only connect was the container's own
+    /// sinkhole. The harness caused the behaviour it reported.
+    #[test]
+    fn nodemailers_own_api_host_is_not_an_accusation() {
+        let mut layers = layers_with(d3(&[
+            "file:/fuzz_exports.js",
+            "dns:api.nodemailer.com",
+            "connect:127.0.0.1:65535",
+        ]));
+        demote_self_referential_d3(&mut layers, "nodemailer");
+
+        assert_eq!(sev(&layers).as_deref(), Some("INFO"));
+        assert_eq!(layers[3].as_ref().unwrap().verdict, Verdict::Pass);
+        assert!(layers[3].as_ref().unwrap().findings[0].contains_key(CAPABILITY_KEY));
+    }
+
+    /// The class this must never weaken, and the reason the literal form of
+    /// item 7 was rejected: `dummy_api_triggered` beacons to a host that is
+    /// nothing to do with it. It trips none of Layer 2's "stronger sub-signals"
+    /// — one query, a 4-character label, no IP literal, no credential read — so
+    /// a strong-signal requirement would have deleted arm C's only D3 true
+    /// positive. Relatedness keeps it.
+    #[test]
+    fn an_unrelated_host_still_accuses() {
+        let mut layers = layers_with(d3(&["dns:evil.example.com", "connect:127.0.0.1:1"]));
+        demote_self_referential_d3(&mut layers, "dummy_api_triggered");
+
+        assert_eq!(sev(&layers).as_deref(), Some("SUSPECT"));
+        assert_eq!(layers[3].as_ref().unwrap().verdict, Verdict::Suspect);
+    }
+
+    /// The second measured instance of the same defect, captured live on
+    /// 2026-09-15 and only visible once item 8 let the dynamic layers reach a
+    /// dependency-declaring package: `ffmpeg`'s fuzzed exports spawn
+    /// `/bin/ffmpeg`, `/usr/bin/ffmpeg`, `/usr/local/bin/ffmpeg` … a PATH
+    /// search for the one binary the package exists to run. The /dev/shm
+    /// entries are libfaketime's and the fuzzer's own scaffolding.
+    #[test]
+    fn ffmpeg_spawning_its_own_binary_is_not_an_accusation() {
+        let mut f = d3(&[
+            "proc:/bin/ffmpeg",
+            "proc:/usr/local/bin/ffmpeg",
+            "proc:/usr/bin/ffmpeg",
+            "file:/fuzz_exports.js",
+            "write:/dev/shm/faketime_shm_60",
+            "delete:/dev/shm/tmp-630642191",
+        ]);
+        f.insert(
+            "message".into(),
+            Value::String("Import-phase side effect detected: child process spawned".into()),
+        );
+        let mut layers = layers_with(f);
+        demote_self_referential_d3(&mut layers, "ffmpeg");
+        assert_eq!(sev(&layers).as_deref(), Some("INFO"));
+    }
+
+    /// The class this must never absorb: spawning a shell is not the package
+    /// doing its job, however related everything else looks.
+    #[test]
+    fn spawning_an_unrelated_binary_still_accuses() {
+        let mut layers = layers_with(d3(&["proc:/usr/bin/ffmpeg", "proc:/bin/sh"]));
+        demote_self_referential_d3(&mut layers, "ffmpeg");
+        assert_eq!(sev(&layers).as_deref(), Some("SUSPECT"));
+    }
+
+    /// A durable write is outside the rule's remit even when the process and
+    /// network evidence is entirely self-referential.
+    #[test]
+    fn a_durable_write_blocks_the_demotion() {
+        let mut layers = layers_with(d3(&[
+            "proc:/usr/bin/ffmpeg",
+            "write:/root/.bashrc",
+        ]));
+        demote_self_referential_d3(&mut layers, "ffmpeg");
+        assert_eq!(sev(&layers).as_deref(), Some("SUSPECT"));
+    }
+
+    /// A BLOCK-severity side effect means a sensitive read was involved; it
+    /// raises its own finding and is never excused here.
+    #[test]
+    fn a_block_severity_side_effect_is_never_demoted() {
+        let mut f = d3(&["proc:/usr/bin/ffmpeg"]);
+        f.insert("severity".into(), Value::String("BLOCK".into()));
+        let mut layers = layers_with(f);
+        demote_self_referential_d3(&mut layers, "ffmpeg");
+        assert_eq!(sev(&layers).as_deref(), Some("BLOCK"));
+    }
+
+    #[test]
+    fn proc_matching_uses_the_basename_not_the_directory() {
+        assert!(proc_matches_identity("/usr/bin/ffmpeg", "ffmpeg"));
+        assert!(proc_matches_identity("/bin/ffmpeg", "ffmpeg"));
+        // A payload cannot qualify by sitting in a conveniently-named directory.
+        assert!(!proc_matches_identity("/opt/ffmpeg/bin/sh", "ffmpeg"));
+        assert!(!proc_matches_identity("/bin/curl", "ffmpeg"));
+    }
+
+    /// One unrelated lookup alongside a related one is still an accusation —
+    /// exfiltration next to a legitimate API call must not hide behind it.
+    #[test]
+    fn a_related_host_does_not_excuse_an_unrelated_one() {
+        let mut layers = layers_with(d3(&[
+            "dns:api.nodemailer.com",
+            "dns:attacker.example.net",
+            "connect:127.0.0.1:65535",
+        ]));
+        demote_self_referential_d3(&mut layers, "nodemailer");
+        assert_eq!(sev(&layers).as_deref(), Some("SUSPECT"));
+    }
+
+    /// A connect to anything but loopback is outside this rule's remit: the
+    /// sinkhole answers 127.0.0.1, so a real peer address means the premise
+    /// ("we only saw the package call its own API") does not hold.
+    #[test]
+    fn a_non_loopback_connect_is_never_demoted() {
+        let mut layers = layers_with(d3(&[
+            "dns:api.nodemailer.com",
+            "connect:8.8.8.8:53",
+        ]));
+        demote_self_referential_d3(&mut layers, "nodemailer");
+        assert_eq!(sev(&layers).as_deref(), Some("SUSPECT"));
+    }
+
+    /// Only a bare `import_side_effect` is in scope. A credential read that
+    /// reaches D3 keeps its severity however related the host looks.
+    #[test]
+    fn a_stronger_layer2_signal_reaching_d3_is_untouched() {
+        let mut f = d3(&["dns:api.nodemailer.com", "file:/etc/shadow"]);
+        f.insert(L2_CHECK_KEY.into(), Value::String("sensitive_file_read".into()));
+        f.insert("severity".into(), Value::String("BLOCK".into()));
+        let mut layers = layers_with(f);
+        demote_self_referential_d3(&mut layers, "nodemailer");
+        assert_eq!(sev(&layers).as_deref(), Some("BLOCK"));
+    }
+
+    /// No network evidence at all is not an excuse — the rule exists to explain
+    /// egress, so with none to explain it must do nothing.
+    #[test]
+    fn a_finding_with_no_network_evidence_is_left_alone() {
+        let mut layers = layers_with(d3(&["write:/work/out.txt"]));
+        demote_self_referential_d3(&mut layers, "nodemailer");
+        assert_eq!(sev(&layers).as_deref(), Some("SUSPECT"));
+    }
+
+    #[test]
+    fn identity_tokens_drop_scopes_and_reject_short_names() {
+        assert_eq!(identity_token("@ctrl/tinycolor").as_deref(), Some("tinycolor"));
+        assert_eq!(identity_token("node-ipc").as_deref(), Some("nodeipc"));
+        // Too short to be evidence: a 2-3 char token matches far too much.
+        assert_eq!(identity_token("ms"), None);
+        assert_eq!(identity_token("d3"), None);
+    }
+
+    #[test]
+    fn host_matching_is_label_wise() {
+        assert!(host_matches_identity("api.nodemailer.com", "nodemailer"));
+        assert!(host_matches_identity("nodemailer.com", "nodemailer"));
+        // A package's own name as the label, even under a hostile parent, is
+        // still its own name — solitude is not this rule's job to enforce.
+        assert!(host_matches_identity("nodemailer.evil.com", "nodemailer"));
+        assert!(!host_matches_identity("evil.example.com", "dummyapitriggered"));
+        assert!(!host_matches_identity("example.com", "nodemailer"));
+    }
+
+    #[test]
+    fn loopback_detection_covers_the_sinkhole_and_nothing_else() {
+        assert!(is_loopback_connect("127.0.0.1:65535"));
+        assert!(is_loopback_connect("127.1.2.3:80"));
+        assert!(is_loopback_connect("[::1]:443"));
+        assert!(!is_loopback_connect("8.8.8.8:53"));
+        assert!(!is_loopback_connect("169.254.169.254:80"));
+        assert!(!is_loopback_connect("1270.0.0.1:80"));
+    }
+}
+
 #[cfg(test)]
 mod network_import_guard_tests {
     use super::*;
@@ -1391,6 +1989,7 @@ mod network_import_guard_tests {
             ScanContext {
                 registry_status: None,
                 declared_deps: None,
+                vendored: false,
                 established: None,
             },
         );

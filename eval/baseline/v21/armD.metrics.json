@@ -1,0 +1,348 @@
+{
+  "provenance": {
+    "tool_version": "0.1.0",
+    "started_at": "2026-09-15T10:19:14.482074061+00:00",
+    "finished_at": "2026-09-15T10:19:19.338372925+00:00",
+    "eval_mode": "registry",
+    "manifests": [
+      "eval/corpus/datadog_static.tsv"
+    ],
+    "entry_count": 499,
+    "docker_version": null,
+    "ptrace_probe": "not_probed",
+    "docker_timeout_secs": null,
+    "top_list_refreshed": false,
+    "top_packages_len": 1142,
+    "top_scoped_len": 94,
+    "host_os": "linux"
+  },
+  "record_count": 499,
+  "outcomes": {
+    "scanned": 499,
+    "skipped_missing": 0,
+    "registry_not_found": 0,
+    "registry_failed": 0,
+    "timeout": 0
+  },
+  "overall": {
+    "true_positive": 437,
+    "false_positive": 0,
+    "true_negative": 0,
+    "false_negative": 62,
+    "artifact_fn": 0,
+    "error": 0,
+    "skipped": 0
+  },
+  "overall_rates": {
+    "scored": 499,
+    "recall": 0.875751503006012,
+    "precision": 1.0,
+    "fpr": null,
+    "f1": 0.9337606837606837,
+    "accuracy": 0.875751503006012
+  },
+  "overall_block_only": {
+    "true_positive": 175,
+    "false_positive": 0,
+    "true_negative": 0,
+    "false_negative": 324,
+    "artifact_fn": 0,
+    "error": 0,
+    "skipped": 0
+  },
+  "overall_block_only_rates": {
+    "scored": 499,
+    "recall": 0.35070140280561124,
+    "precision": 1.0,
+    "fpr": null,
+    "f1": 0.5192878338278932,
+    "accuracy": 0.35070140280561124
+  },
+  "by_group": [
+    {
+      "group": "datadog",
+      "confusion": {
+        "true_positive": 437,
+        "false_positive": 0,
+        "true_negative": 0,
+        "false_negative": 62,
+        "artifact_fn": 0,
+        "error": 0,
+        "skipped": 0
+      },
+      "rates": {
+        "scored": 499,
+        "recall": 0.875751503006012,
+        "precision": 1.0,
+        "fpr": null,
+        "f1": 0.9337606837606837,
+        "accuracy": 0.875751503006012
+      }
+    }
+  ],
+  "by_layer": [
+    {
+      "layer": 0,
+      "ran": 0,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 499,
+      "block": 0,
+      "suspect": 0,
+      "pass": 0,
+      "finding_count": 0,
+      "sole_detector": 0,
+      "false_hits": 0,
+      "ms_p50": 0,
+      "ms_p90": 0,
+      "ms_max": 0,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 1,
+      "ran": 499,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 0,
+      "block": 175,
+      "suspect": 262,
+      "pass": 62,
+      "finding_count": 2147,
+      "sole_detector": 437,
+      "false_hits": 0,
+      "ms_p50": 3,
+      "ms_p90": 33,
+      "ms_max": 73,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 2,
+      "ran": 0,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 499,
+      "block": 0,
+      "suspect": 0,
+      "pass": 0,
+      "finding_count": 0,
+      "sole_detector": 0,
+      "false_hits": 0,
+      "ms_p50": 0,
+      "ms_p90": 0,
+      "ms_max": 0,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 3,
+      "ran": 0,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 499,
+      "block": 0,
+      "suspect": 0,
+      "pass": 0,
+      "finding_count": 0,
+      "sole_detector": 0,
+      "false_hits": 0,
+      "ms_p50": 0,
+      "ms_p90": 0,
+      "ms_max": 0,
+      "excluded_not_dyn_valid": 0
+    }
+  ],
+  "by_vector": [
+    {
+      "vector": "A1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "A2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "A3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "A4",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "META",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "B1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 306
+    },
+    {
+      "vector": "B2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 299
+    },
+    {
+      "vector": "B3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "B4",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "C1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "C2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "C3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "E1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 171
+    }
+  ],
+  "timing": {
+    "total_ms": 6319,
+    "p50": 3,
+    "p90": 52,
+    "p99": 93,
+    "max": 111,
+    "slowest": [
+      [
+        "sample:compromised_lib/@tanstack@react-router/1.169.5/2026-05-11-@tanstack_react-router-v1.169.5.zip",
+        111
+      ],
+      [
+        "sample:compromised_lib/@opensearch-project@opensearch/3.6.2/2026-05-12-@opensearch-project_opensearch-v3.6.2.zip",
+        107
+      ],
+      [
+        "sample:malicious_intent/dhhdbank92015/25.515.2/2025-05-15-dhhdbank92015-v25.515.2.zip",
+        98
+      ],
+      [
+        "sample:compromised_lib/@opensearch-project@opensearch/3.5.3/2026-05-12-@opensearch-project_opensearch-v3.5.3.zip",
+        95
+      ],
+      [
+        "sample:compromised_lib/@tanstack@solid-router/1.169.8/2026-05-11-@tanstack_solid-router-v1.169.8.zip",
+        95
+      ],
+      [
+        "sample:compromised_lib/@uipath@rpa-tool/0.9.5/2026-05-11-@uipath_rpa-tool-v0.9.5.zip",
+        93
+      ],
+      [
+        "sample:compromised_lib/@operato@board/9.0.37/2025-09-16-@operato_board-v9.0.37.zip",
+        80
+      ],
+      [
+        "sample:compromised_lib/@operato@board/9.0.51/2025-09-16-@operato_board-v9.0.51.zip",
+        79
+      ],
+      [
+        "sample:compromised_lib/create-hest-app/0.1.9/2025-09-14-create-hest-app-v0.1.9.zip",
+        79
+      ],
+      [
+        "sample:compromised_lib/@operato@input/9.0.48/2025-09-16-@operato_input-v9.0.48.zip",
+        77
+      ]
+    ]
+  }
+}

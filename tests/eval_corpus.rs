@@ -32,8 +32,8 @@ fn fixture_exercises_every_kind() {
         .expect("fixture must parse");
 
     let kinds: Vec<Kind> = entries.iter().map(|e| e.kind).collect();
-    for k in [Kind::Name, Kind::Version, Kind::Dir, Kind::Holder, Kind::Sample] {
-        assert!(kinds.contains(&k), "fixture is missing kind {:?}", k);
+    for k in Kind::ALL {
+        assert!(kinds.contains(k), "fixture is missing kind {:?}", k);
     }
 
     // The leading-tab row proves line-level trimming happens before the split.
@@ -69,6 +69,49 @@ fn fixture_derives_identities_correctly() {
     assert_eq!(d.label, Label::Benign);
     assert!(d.vectors.is_empty());
     assert_eq!(d.layers, vec![1, 2, 3]);
+
+    // A `pair` splits into prev/latest and takes its name from the directory the
+    // two share, not from the literal "latest" segment.
+    let p = entries.iter().find(|e| e.kind == Kind::Pair).unwrap();
+    assert_eq!(p.package, "dummy_malicious_update");
+    assert_eq!(
+        p.path.as_deref(),
+        Some("dummy_packages/dummy_malicious_update/latest"),
+        "`path` must hold the version under test"
+    );
+    assert_eq!(
+        p.path_prev.as_deref(),
+        Some("dummy_packages/dummy_malicious_update/prev"),
+        "`path_prev` must hold the predecessor"
+    );
+    assert_eq!(p.vectors, vec!["B3"]);
+    assert_eq!(p.entry_id(), "pair:dummy_packages/dummy_malicious_update/latest");
+}
+
+#[test]
+fn a_malformed_pair_is_a_parse_error_not_a_half_scan() {
+    // Every one of these would otherwise diff against nothing and report the
+    // whole package as newly introduced — a fabricated B3 rather than a miss.
+    for bad in [
+        "pair\tonly-one-dir\tdummy\tmalicious\tB3\t1",
+        "pair\t::latest\tdummy\tmalicious\tB3\t1",
+        "pair\tprev::\tdummy\tmalicious\tB3\t1",
+        "pair\tsame::same\tdummy\tmalicious\tB3\t1",
+    ] {
+        assert!(
+            parse_manifest(bad, "f").is_err(),
+            "should not parse: {}",
+            bad
+        );
+    }
+}
+
+/// A `pair` has no registry identity, so asking for Layer 0 is a manifest
+/// mistake — the same rule `dir` and `sample` already carry.
+#[test]
+fn a_pair_may_not_request_layer_zero() {
+    let line = "pair\ta::b\tdummy\tmalicious\tB3\t0,1";
+    assert!(parse_manifest(line, "f").is_err());
 }
 
 #[test]

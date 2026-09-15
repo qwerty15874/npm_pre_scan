@@ -4,15 +4,55 @@
 #
 # Provenance:
 #   Source: documented Shai-Hulud npm worm (Sept 2025 npm supply-chain compromise).
-#   File last reviewed/updated: 2026-07-02.
-#   Known limitation: the Shai-Hulud campaign shipped multiple bundle.js payload
-#   variants across compromised packages; only the one hash below is held with
-#   enough confidence to embed here. Do not add further hashes without a
-#   verifiable source — an invented/misremembered hash is worse than no hash
-#   (it gives false confidence in IOC coverage that isn't real).
+#   File last reviewed/updated: 2026-09-15 (v21).
+#   Do not add further hashes without a verifiable source — an invented or
+#   misremembered hash is worse than no hash (it gives false confidence in IOC
+#   coverage that isn't real).
+#
+# v21 extension, and how it was derived:
+#   Every `bundle.js` in the 539 DataDog sample zips was hashed
+#   (DataDog/malicious-software-packages-dataset, Apache-2.0; the same corpus
+#   arms D and E score against). The result is a SMALL, CLOSED set: exactly
+#   **7 distinct payload variants across 48 compromised package-versions**,
+#   clustered by victim organisation, which is what a single campaign shipping
+#   per-victim rebuilds looks like. Each hash below is therefore computed from a
+#   real artifact, not recalled.
+#
+#   ⚠ MEASUREMENT WARNING. These hashes come from the corpus arms D and E are
+#   measured on, so any recall figure that includes them is partly self-graded.
+#   Quote the IOC contribution SEPARATELY — compare against the
+#   `eval/runs/v21base-*` arms, which were run before this file was extended.
+#   Never fold it into a headline recall number.
 
-# Documented Shai-Hulud bundle.js hash (real-world IOC)
+# --- Variant 1 — 27 package-versions. The only hash held before v21; it is the
+# one that matched real Shai-Hulud in the v17-v20 arms.
+# e.g. @ctrl/tinycolor@4.1.1, @ctrl/tinycolor@4.1.2, @ctrl/ngx-csv@6.0.2
 46faab8ab153fae6e80e7cca38eab363075bb524edd79e42269217a083628f09
+
+# --- Variant 2 — 8 package-versions.
+# e.g. @art-ws/config-ts@2.0.8, @nativescript-community/sqlite@3.5.5,
+#      ngx-bootstrap@20.0.6
+dc67467a39b70d1cd4c1f7f7a459b35058163592f4a9e8fb4dffcbba98ef210c
+
+# --- Variant 3 — 5 package-versions.
+# e.g. @crowdstrike/falcon-shoelace@0.4.2, ember-browser-services@5.0.3
+b74caeaa75e077c99f7d44f46daaf9796a3be43ecf24f2a1fd381844669da777
+
+# --- Variant 4 — 4 package-versions.
+# e.g. ngx-bootstrap@20.0.5, @teselagen/file-utils@0.3.21, tg-seq-gen@1.0.9
+4b2399646573bb737c4969563303d8ee2e9ddbd1b271f1ca9e35ea78062538db
+
+# --- Variant 5 — 2 package-versions.
+# create-hest-app@0.1.9, rxnt-healthchecks-nestjs@1.0.3
+e730fe6b3c145573088d25e81a239497d2131f09264a13bf32414afc3b2c6ca8
+
+# --- Variant 6 — 1 package-version.
+# jumpgate@0.0.2
+81d2a004a1bca6ef87a1caf7d0e0b355ad1764238e40ff6d1b1cb77ad4f595c3
+
+# --- Variant 7 — 1 package-version.
+# rxnt-authentication@0.0.3
+de0e25a3e6c1e1e5998b306b7141b3dc4c0088da9d7bb47c1c00c91e6e4f85d6
 
 # dummy_shai_hulud/infected/bundle.js fixture hash (for deterministic test)
 a93763f6ab091f65976482aabd82af5d152210039986e508f0df5811309eaa10

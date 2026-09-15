@@ -23,8 +23,11 @@ Out of scope: VCS/CI/build-system compromise (not detectable by a package scanne
     Layer 3  Dynamic — condition mut [DONE]   live Docker verified (libfaketime, env spoof, API fuzz)
     Scoring  Aggregate risk score    [DONE]   cross-layer weighted noisy-OR
     Eval     Batch harness + corpus  [DONE]   --eval; 6 arms measured (v17)
-    Precision Verdict calibration    [PART]   v19: BLOCK 0/27; any-finding FPR
-                                              70.4% -> 48.1%. Ceiling is coverage.
+    Precision Verdict calibration    [PART]   v21: BLOCK 0/27; any-finding FPR
+                                              29.6% -> 25.9%. Calibration exhausted
+                                              at this recall floor.
+    Coverage  Dynamic-layer reach    [PART]   v21: L2 reaches 26 of 27 (was 10);
+                                              arm C 14/14 vectors (B3 closed).
 
 All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-verified.
 
@@ -49,12 +52,33 @@ All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-ve
   established package became a capability, and unreachable build/release tooling is now
   exempt from the worm heuristic.
 
-⚠ Do not cite an FPR without reading EVALUATION. 8 of 27 legitimate packages still
+✅ v21 closed the three open items and roughly doubled the dynamic layers' reach.
+  Layer 2 now runs on 26 of 27 legitimate packages (was 10) and Layer 3 on 25, because
+  dependencies are resolved on the host and mounted read-only into the sandbox. Arm F's
+  any-finding FPR fell 29.6% -> 25.9% and BLOCK-level FPR stayed 0.0%, with every floor
+  held (arm D 87.58%, arm E 97.50%, arm C 16/16 packages and now 14/14 vectors — B3
+  produced the first true positive in the project's history, via the new `pair` manifest
+  kind). D3's false positive is gone, fixed by RELATEDNESS rather than signal strength:
+  the literal fix was implemented, measured, and found to delete the project's own D3
+  detection.
+
+⚠ Do not cite an FPR without reading EVALUATION. 7 of 27 legitimate packages still
   collect at least one SUSPECT. They genuinely have the capability (node-sass runs a
   postinstall, jquery ships an eval) — telling "has" from "abuses" needs dynamic
-  evidence, and the dynamic layers reach only 11 of 27. That is a coverage limit, not
-  calibration: the remaining four `obfuscation` cases CANNOT be demoted at this recall
+  evidence. The remaining four `obfuscation` cases CANNOT be demoted at this recall
   floor (measured: it would take arm D to 85.6%, below 86.8%).
+
+⚠ 25.9% is NOT a like-for-like improvement on 29.6%. The pipeline being measured got
+  larger at the same time the number fell: with only 10 of 27 packages reaching the
+  dynamic layers, the old figure was measured over a partially-blind pipeline. Running
+  all 27 exposed two false positives that had always existed and had simply never been
+  looked for — ffmpeg (D3, since fixed) and bcrypt (C3, C3's first ever). Quote both
+  facts together.
+
+⚠ The v21 IOC extension adds ZERO recall. data/worm_iocs.txt went from 1 hash to the
+  full 7-variant Shai-Hulud fingerprint; 44 packages now match by hash instead of 25,
+  but 0 as sole detector and arm D recall is bit-identical. It is identity-level
+  confirmation, not detection.
 
 
 -------------------------------------------------------------------------------
@@ -62,7 +86,13 @@ All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-ve
 -------------------------------------------------------------------------------
 
  Coverage is complete. The measured column is what the real-corpus arms observed,
- updated for the v20 fix pass (earlier figures shown as "was" where they changed).
+ updated for the v21 coverage pass (earlier figures shown as "was" where they changed).
+
+ v21: the dynamic layers now reach 26 of 27 legitimate packages (was 10) because
+ dependencies are vendored in from the host. Arm F's FPR fell 29.6% -> 25.9% while that
+ happened, so the two are NOT like-for-like: the pipeline being measured got larger at the
+ same time the number fell. The expansion also exposed two false positives that had always
+ existed and had simply never been looked for (D3 on ffmpeg, now fixed; C3 on bcrypt, new).
 
    fires  cross-arm total (dominated by the malicious corpora — arms A/D/E).
    FP     distinct legitimate packages out of the 27 in eval/corpus/parent_benign.tsv,
@@ -97,20 +127,30 @@ All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-ve
                                                                                       The 4 residual obfuscation
                                                                                       FPs CANNOT be demoted at
                                                                                       this floor — see item 7
- B3  Malicious version update         1        BLOCK (newly-introduced eval/diff)   X 2 fires / 2 FP (bcrypt,
-                                                                                      nodemailer — the latter is
-                                                                                      registry DRIFT at v20) — no
-                                                                                      true positive ever; too few
-                                                                                      observations to calibrate
+ B3  Malicious version update         1        BLOCK (newly-introduced eval/diff)   ! 1 fire / 1 FP (bcrypt).
+                                               Reachable from a corpus via the        v21: FIRST TRUE POSITIVE
+                                               `pair` manifest kind (v21)             (arm C 0/1 -> 1/1). The rule
+                                                                                      always worked; nothing could
+                                                                                      hand it two versions. Still
+                                                                                      too few real observations
  C1  Import-time execution            2        live BLOCK (import side effects)     OK 25 fires / 0 FP
  C2  Slow exfiltration (DNS tunnel)   2        live BLOCK (encoded labels)          OK 10 fires / 0 FP
- C3  Hidden binary (.node addon)      2        live SUSPECT (native addon open)     - dummy only, no real sample
+ C3  Hidden binary (.node addon)      2        live SUSPECT (native addon open)     ! 1 FP (bcrypt) — FIRST
+                                                                                      measured FP. v21: appeared
+                                                                                      only once vendoring let the
+                                                                                      prebuilt .node actually load
  D1  Time Bomb (date/time-gated)      3        live SUSPECT (clock scenario,        - dummy only, no real sample.
                                                PINNED baseline+clock since v18)        Differential is now
                                                                                       date-invariant
- D2  Environment-triggered            3        live SUSPECT (env scenario)          - 9 fires / 0 FP, some noise
- D3  Trigger-on-use (API-gated)       3        live SUSPECT (fuzz scenario)         ! 2 fires / 1 FP (nodemailer;
-                                                                                      structural). Item 7
+ D2  Environment-triggered            3        live SUSPECT (env scenario)          - 3 fires / 0 FP. v21 fixed
+                                                                                      the HOME-mutation artifact:
+                                                                                      arm E noise 7 -> 2 fires
+ D3  Trigger-on-use (API-gated)       3        live SUSPECT (fuzz scenario);        OK 0 FP (was 1, nodemailer;
+                                               self-referential side effects          ffmpeg also cleared). v21
+                                               demoted to capability (v21)            gates on RELATEDNESS, not on
+                                                                                      signal strength — the literal
+                                                                                      fix was measured to delete
+                                                                                      the project's own D3 dummy
  E1  Self-propagating worm            1+2      L1: category SUSPECT, >=2-category   OK 191 fires, 5/5 detected;
                                                IN ONE FILE or IOC hash BLOCK.          IOC matched real Shai-Hulud
                                                Unreachable build/release tooling       / 1 FP (node-sass only —
@@ -537,6 +577,12 @@ Evaluation flags (--eval only):
                            the pre-existing behaviour — but one package whose npm
                            install hangs then stalls the whole batch. Also settable via
                            NPM_PRE_SCAN_DOCKER_TIMEOUT.
+    --package-timeout <s>  wall-clock cap for ONE package's dynamic layers COMBINED.
+                           --docker-timeout bounds a single `docker run`, so a package
+                           that stalls in both Layer 2 and Layer 3 costs twice that
+                           (shadowsocks: 2 x 605 s, 84% of arm F's total, for no
+                           finding). Each run gets the smaller of the two remaining
+                           budgets. Also settable via NPM_PRE_SCAN_PACKAGE_TIMEOUT.
     --eval-evidence        keep full `evidence` arrays in records.jsonl (off by default;
                            L2/L3 diffs can attach hundreds of events per finding)
 
@@ -766,6 +812,28 @@ and safety notes in eval/README.md; results and a ranked fix list in eval/REPORT
      nanoid typosquat) turned out to expose a rule GAP — it calls
      require('os').homedir(), which the bare os.homedir() pattern missed. os.homedir
      is 14.4% malicious vs 0.0% benign, so widening it was free.
+
+  ── v21 COVERAGE PASS (2026-09-15) — items 7, 8, 9 ──
+  Compared against a FRESH run of the unmodified HEAD binary (eval/baseline/v21base/),
+  not against v20: arms B and F hit the live registry, and between the v20 run and this
+  baseline arm B's FPR drifted 30.0% -> 26.7% with NO code change (nodemailer was
+  republished). Snapshot in eval/baseline/v21/.
+
+      arm   recall base -> v21     any-finding FPR      BLOCK-level FPR
+      ---   ------------------     -----------------    ---------------
+      A         1.3% ->  1.3%       3.7% ->  3.7%        3.7%   (bit-identical)
+      B        85.7% -> 85.7%      26.7% -> 26.7%        0.0%   (bit-identical)
+      C     16/16 pkgs, unchanged    0.0% ->  0.0%        0.0%   (vectors 13/14 -> 14/14)
+      D    437/499 -> 437/499        (no benign control)  floor 86.8% HELD
+      E      39/40 -> 39/40          (no benign control)  floor 95.5% HELD
+      F              —              29.6% -> 25.9%        0.0%
+
+    Dynamic reach, arm F: L2 ran 10 -> 26 of 27, L3 10 -> 25, dyn_valid 12 -> 24,
+    14 packages vendored. Arm E dyn_valid 28 -> 34. shadowsocks 1210 s -> 905 s.
+    Cleared: nodemailer (D3). Newly accused: NONE at package level — ffmpeg was
+    accused by the intermediate network-only gate and cleared by the final one
+    (preserved at eval/runs/v21netgate-armF); bcrypt gained a C3 finding but was
+    already accused via B3.
 
   ── v18 FIX PASS (2026-08-04) — items 0,1,2,3,5,6 done; 4,7,8,9,10 open ──
   Arms A, B, C, F re-run against eval/baseline/v17/; new snapshot in eval/baseline/v18/.

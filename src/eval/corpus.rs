@@ -54,9 +54,29 @@ pub enum Kind {
     /// A path under `samples/npm/` in the DataDog dataset, fetched as an
     /// encrypted zip.
     Sample,
+    /// Two local directories, `prev::latest`, expressing one package across a
+    /// version transition.
+    ///
+    /// Exists because B3 (`version_diff`) needs a prev/latest pair and no other
+    /// kind can express one: `run_version_diff_local` had zero production call
+    /// sites, so B3 reported 0/1 in arms B, C and E for want of a manifest shape
+    /// rather than for want of a rule. Its recall was unmeasured, not zero.
+    Pair,
 }
 
 impl Kind {
+    /// Every variant, so a coverage test can be exhaustive rather than
+    /// re-listing them by hand — `fixture_exercises_every_kind` did the latter
+    /// and therefore did not notice when `Pair` was added.
+    pub const ALL: &'static [Kind] = &[
+        Kind::Name,
+        Kind::Version,
+        Kind::Dir,
+        Kind::Holder,
+        Kind::Sample,
+        Kind::Pair,
+    ];
+
     fn parse(s: &str) -> Option<Self> {
         match s {
             "name" => Some(Kind::Name),
@@ -64,6 +84,7 @@ impl Kind {
             "dir" => Some(Kind::Dir),
             "holder" => Some(Kind::Holder),
             "sample" => Some(Kind::Sample),
+            "pair" => Some(Kind::Pair),
             _ => None,
         }
     }
@@ -75,11 +96,13 @@ impl Kind {
             Kind::Dir => "dir",
             Kind::Holder => "holder",
             Kind::Sample => "sample",
+            Kind::Pair => "pair",
         }
     }
 
     /// True when the entry has a registry identity, i.e. Layer 0 is applicable.
-    /// `Dir` and `Sample` come from local content with no name to look up.
+    /// `Dir`, `Sample` and `Pair` come from local content with no name to look
+    /// up.
     pub fn has_registry_identity(&self) -> bool {
         matches!(self, Kind::Name | Kind::Version | Kind::Holder)
     }
@@ -163,8 +186,11 @@ pub struct CorpusEntry {
     pub package: String,
     /// Pinned version, for `Version` and `Sample` only.
     pub version: Option<String>,
-    /// Filesystem or dataset path, for `Dir` and `Sample` only.
+    /// Filesystem or dataset path, for `Dir` and `Sample` only. For `Pair`,
+    /// the LATEST directory — the version under test.
     pub path: Option<String>,
+    /// The predecessor directory, for `Pair` only. `path` holds the latest.
+    pub path_prev: Option<String>,
     /// Manifest this entry came from, and its 1-based line number. Carried so a
     /// record can be traced back to the line that produced it.
     pub source: String,
@@ -181,6 +207,7 @@ impl CorpusEntry {
             Kind::Version => format!("{}@{}", self.package, self.version.as_deref().unwrap_or("")),
             Kind::Dir => format!("dir:{}", self.path.as_deref().unwrap_or("")),
             Kind::Sample => format!("sample:{}", self.path.as_deref().unwrap_or("")),
+            Kind::Pair => format!("pair:{}", self.path.as_deref().unwrap_or("")),
         }
     }
 }
@@ -266,9 +293,9 @@ fn decode_sample_dir(dir: &str) -> String {
 fn derive_identity(
     kind: Kind,
     id: &str,
-) -> Result<(String, Option<String>, Option<String>), String> {
+) -> Result<(String, Option<String>, Option<String>, Option<String>), String> {
     match kind {
-        Kind::Name | Kind::Holder => Ok((id.to_string(), None, None)),
+        Kind::Name | Kind::Holder => Ok((id.to_string(), None, None, None)),
 
         Kind::Version => {
             // Split on the LAST '@' so scoped names survive: `@scope/name@1.2.3`.
@@ -279,7 +306,7 @@ fn derive_identity(
                     if name.is_empty() || ver.is_empty() {
                         Err("expected 'name@version'".to_string())
                     } else {
-                        Ok((name.to_string(), Some(ver.to_string()), None))
+                        Ok((name.to_string(), Some(ver.to_string()), None, None))
                     }
                 }
                 None => Err("expected 'name@version' (no '@' found)".to_string()),
@@ -293,7 +320,7 @@ fn derive_identity(
                 .next()
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| "empty directory path".to_string())?;
-            Ok((name.to_string(), None, Some(id.to_string())))
+            Ok((name.to_string(), None, Some(id.to_string()), None))
         }
 
         Kind::Sample => {
@@ -308,8 +335,52 @@ fn derive_identity(
                 decode_sample_dir(parts[1]),
                 Some(parts[2].to_string()),
                 Some(id.to_string()),
+                None,
             ))
         }
+
+        Kind::Pair => {
+            let (prev, latest) = id
+                .split_once(PAIR_SEPARATOR)
+                .ok_or_else(|| format!("expected 'prev{}latest'", PAIR_SEPARATOR))?;
+            let prev = prev.trim_end_matches('/');
+            let latest = latest.trim_end_matches('/');
+            if prev.is_empty() || latest.is_empty() {
+                return Err(format!("expected 'prev{}latest'", PAIR_SEPARATOR));
+            }
+            if prev == latest {
+                return Err("prev and latest are the same directory".to_string());
+            }
+            Ok((
+                pair_package_name(prev, latest),
+                None,
+                Some(latest.to_string()),
+                Some(prev.to_string()),
+            ))
+        }
+    }
+}
+
+/// Separates the two directories in a `pair` entry's `id` column. `::` rather
+/// than a comma or space because a path may contain either, and rather than a
+/// tab because the manifest is tab-delimited.
+pub const PAIR_SEPARATOR: &str = "::";
+
+/// The package name for a `pair`: the last segment the two paths share, which
+/// for `a/b/dummy_malicious_update/{prev,latest}` is `dummy_malicious_update`.
+/// Falls back to the latest directory's own last segment when they share no
+/// parent, so the name is never empty.
+fn pair_package_name(prev: &str, latest: &str) -> String {
+    let last = |p: &str| p.rsplit('/').next().unwrap_or(p).to_string();
+    let shared: Vec<&str> = prev
+        .split('/')
+        .zip(latest.split('/'))
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a)
+        .collect();
+    match shared.last() {
+        Some(seg) if !seg.is_empty() => seg.to_string(),
+        _ => last(latest),
     }
 }
 
@@ -351,7 +422,7 @@ pub fn parse_manifest(text: &str, path: &str) -> Result<Vec<CorpusEntry>, Vec<Ma
             Some(k) => k,
             None => {
                 err(format!(
-                    "unknown kind '{}' (expected name, version, dir, holder or sample)",
+                    "unknown kind '{}' (expected name, version, dir, holder, sample or pair)",
                     fields[0]
                 ));
                 continue;
@@ -396,7 +467,7 @@ pub fn parse_manifest(text: &str, path: &str) -> Result<Vec<CorpusEntry>, Vec<Ma
                 continue;
             }
         };
-        let (package, version, entry_path) = match derive_identity(kind, id) {
+        let (package, version, entry_path, entry_path_prev) = match derive_identity(kind, id) {
             Ok(t) => t,
             Err(e) => {
                 err(format!("bad id '{}': {}", id, e));
@@ -431,6 +502,7 @@ pub fn parse_manifest(text: &str, path: &str) -> Result<Vec<CorpusEntry>, Vec<Ma
             package,
             version,
             path: entry_path,
+            path_prev: entry_path_prev,
             source: path.to_string(),
             line_no,
         });

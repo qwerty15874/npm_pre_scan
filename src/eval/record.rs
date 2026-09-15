@@ -206,7 +206,7 @@ impl LayerRecord {
         }
     }
 
-    fn ran(&self) -> bool {
+    pub(crate) fn ran(&self) -> bool {
         self.status == LayerStatus::Ran
     }
 
@@ -241,7 +241,18 @@ pub struct EvalRecord {
     /// `MODULE_NOT_FOUND` (swallowed by the try/catch), and the layer reports an
     /// empty profile that looks exactly like a clean package. Such entries are
     /// excluded from the dynamic denominators rather than counted as precision.
+    ///
+    /// A **timed-out** dynamic layer disqualifies an entry for the same reason
+    /// and was previously missed: `shadowsocks` declares zero dependencies, so
+    /// v20 recorded `dyn_valid: true` even though both of its dynamic layers
+    /// had been killed at the 600 s wall and observed nothing at all. "Trust
+    /// the dynamic result" must mean a dynamic result exists.
     pub dyn_valid: bool,
+    /// Whether the dynamic layers ran with host-vendored dependencies. Recorded
+    /// separately from `dyn_valid` so "analysable because it had no
+    /// dependencies" and "analysable because we supplied them" stay
+    /// distinguishable in the results.
+    pub vendored: bool,
 
     // --- ground truth, verbatim from the manifest ---
     pub group: String,
@@ -285,6 +296,9 @@ pub struct RecordInputs<'a> {
     pub outcome_detail: Option<String>,
     pub registry_status: Option<String>,
     pub declared_deps: Option<usize>,
+    /// Whether dependencies were resolved on the host and mounted into the
+    /// dynamic layers, making a dependency-bearing package analysable.
+    pub vendored: bool,
     pub l0_metadata_version: Option<String>,
     pub total_ms: u64,
     pub scanned_at: String,
@@ -304,6 +318,7 @@ impl EvalRecord {
             outcome_detail,
             registry_status,
             declared_deps,
+            vendored,
             l0_metadata_version,
             total_ms,
             scanned_at,
@@ -346,8 +361,9 @@ impl EvalRecord {
             classify(outcome, &layers, verdict.as_ref(), is_malicious, entry, true);
 
         // Dynamic observations are only trustworthy for a dependency-free
-        // package (see the `dyn_valid` doc comment).
-        let dyn_valid = declared_deps == Some(0);
+        // package that actually produced one (see the `dyn_valid` doc comment).
+        let dyn_valid = (declared_deps == Some(0) || vendored)
+            && !layers[2..].iter().any(layer_timed_out);
 
         EvalRecord {
             entry_id: entry.entry_id(),
@@ -359,6 +375,7 @@ impl EvalRecord {
             l0_metadata_version,
             declared_deps,
             dyn_valid,
+            vendored,
             group: entry.group.as_str().to_string(),
             label: entry.label.as_str().to_string(),
             expected_vectors: entry.vectors.clone(),
@@ -390,6 +407,18 @@ impl EvalRecord {
             .filter(|&i| i < 2 || self.dyn_valid)
             .collect()
     }
+}
+
+/// Whether a layer failed because its wall-clock budget killed it.
+///
+/// Matched on the note rather than re-derived, so this cannot drift away from
+/// what `docker::run_docker` actually produces — see `docker::TIMEOUT_NOTE_MARKER`.
+pub fn layer_timed_out(layer: &LayerRecord) -> bool {
+    layer.status == LayerStatus::Error
+        && layer
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains(crate::docker::TIMEOUT_NOTE_MARKER))
 }
 
 /// Score one prediction against its label.
@@ -498,6 +527,7 @@ pub const RESULTS_COLUMNS: &[&str] = &[
     "pinned",
     "declared_deps",
     "dyn_valid",
+    "vendored",
     "expected_vectors",
     "applicable_layers",
     "effective_layers",
@@ -572,6 +602,7 @@ pub fn write_results_row<W: Write>(w: &mut W, r: &EvalRecord) -> std::io::Result
         r.pinned.to_string(),
         opt(&r.declared_deps),
         r.dyn_valid.to_string(),
+        r.vendored.to_string(),
         join(&r.expected_vectors),
         join_u8(&r.applicable_layers),
         join_u8(&r.effective_layers),
@@ -680,10 +711,182 @@ mod tests {
             outcome_detail: None,
             registry_status: Some("found".into()),
             declared_deps: Some(0),
+            vendored: false,
             l0_metadata_version: None,
             total_ms: 5,
             scanned_at: "2026-07-30T00:00:00Z".into(),
         })
+    }
+
+    fn timed_out_layer() -> LayerRecord {
+        LayerRecord {
+            status: LayerStatus::Error,
+            verdict: Some(Verdict::Error),
+            note: Some(crate::docker::timeout_note(Some(600))),
+            ms: Some(605011),
+            ..LayerRecord::not_run()
+        }
+    }
+
+    /// The exact `shadowsocks` shape from the v20 arm F run: zero declared
+    /// dependencies, Layer 1 produced a real (false-positive) finding, and BOTH
+    /// dynamic layers were killed at the 600 s wall having observed nothing.
+    ///
+    /// The record must STAY SCORED. Promoting the timeout to the record level
+    /// would classify it `Error` and drop it from arm F's benign denominator,
+    /// turning 8/27 into 8/26 — a headline FPR improvement bought with a Docker
+    /// stall rather than a detection change.
+    #[test]
+    fn a_dynamic_timeout_alongside_a_static_verdict_still_scores() {
+        let e = entry("name\tshadowsocks\tparent_benign\tbenign\t-\t0,1,2,3");
+        let layers = [
+            layer_with(vec![], Verdict::Pass),
+            layer_with(
+                vec![finding("shell_exfil", "SUSPECT", "B2")],
+                Verdict::Suspect,
+            ),
+            timed_out_layer(),
+            timed_out_layer(),
+        ];
+        let r = build(&e, layers, Verdict::Suspect);
+
+        assert_eq!(
+            r.classification,
+            Classification::FalsePositive,
+            "the static false positive must still count: {:?}",
+            r.classification
+        );
+        assert!(
+            !r.dyn_valid,
+            "a layer that was killed observed nothing, so its silence is not evidence"
+        );
+        assert_eq!(
+            r.admissible_layers(),
+            vec![0, 1],
+            "the timed-out dynamic layers must not be admissible"
+        );
+    }
+
+    /// The other half of the same rule: when the timeout left nothing observed,
+    /// the record IS disqualified — and now says why, instead of being filed as
+    /// a generic error with `outcomes.timeout` still reading zero.
+    #[test]
+    fn a_timeout_that_left_nothing_observed_is_an_error() {
+        let e = entry("dir\tdummy_packages/dummy_import_time\tdummy\tmalicious\tC1\t2,3");
+        let layers = [
+            LayerRecord::not_run(),
+            LayerRecord::not_run(),
+            timed_out_layer(),
+            timed_out_layer(),
+        ];
+        let r = EvalRecord::build(RecordInputs {
+            entry: &e,
+            effective_layers: vec![2, 3],
+            layers,
+            risk_score: None,
+            verdict: Some(Verdict::Error),
+            outcome: Outcome::Timeout,
+            outcome_detail: Some(crate::docker::timeout_note(Some(600))),
+            registry_status: None,
+            declared_deps: Some(0),
+            vendored: false,
+            l0_metadata_version: None,
+            total_ms: 1210000,
+            scanned_at: "2026-09-15T00:00:00Z".into(),
+        });
+        assert_eq!(r.classification, Classification::Error);
+        assert!(r
+            .outcome_detail
+            .as_deref()
+            .is_some_and(|d| d.contains(crate::docker::TIMEOUT_NOTE_MARKER)));
+    }
+
+    /// The coverage ceiling item 8 exists to lift: before vendoring, a
+    /// dependency-bearing package was excluded from the dynamic denominators no
+    /// matter what Layer 2/3 observed, because `npm install --offline` under
+    /// `--network=none` could not fetch anything and the resulting empty profile
+    /// was indistinguishable from a clean one. With dependencies supplied from
+    /// the host that reasoning no longer applies.
+    #[test]
+    fn vendored_dependencies_make_a_dep_bearing_package_analysable() {
+        let e = entry("name\texpress\tparent_benign\tbenign\t-\t0,1,2,3");
+        let layers = [
+            layer_with(vec![], Verdict::Pass),
+            layer_with(vec![], Verdict::Pass),
+            layer_with(vec![], Verdict::Pass),
+            layer_with(vec![], Verdict::Pass),
+        ];
+
+        let mut inputs = || RecordInputs {
+            entry: &e,
+            effective_layers: vec![0, 1, 2, 3],
+            layers: layers.clone(),
+            risk_score: Some(0.0),
+            verdict: Some(Verdict::Pass),
+            outcome: Outcome::Scanned,
+            outcome_detail: None,
+            registry_status: Some("found".into()),
+            declared_deps: Some(28),
+            vendored: false,
+            l0_metadata_version: None,
+            total_ms: 5,
+            scanned_at: "2026-09-15T00:00:00Z".into(),
+        };
+
+        let unvendored = EvalRecord::build(inputs());
+        assert!(
+            !unvendored.dyn_valid,
+            "28 declared dependencies and none supplied: the dynamic layers saw nothing"
+        );
+
+        let vendored = EvalRecord::build(RecordInputs {
+            vendored: true,
+            ..inputs()
+        });
+        assert!(
+            vendored.dyn_valid,
+            "with dependencies mounted the dynamic result is real evidence"
+        );
+        assert_eq!(vendored.admissible_layers(), vec![0, 1, 2, 3]);
+    }
+
+    /// Vendoring must not override the other disqualifier: a layer that was
+    /// killed observed nothing regardless of how its dependencies got there.
+    #[test]
+    fn vendoring_does_not_rescue_a_timed_out_layer() {
+        let e = entry("name\texpress\tparent_benign\tbenign\t-\t0,1,2,3");
+        let r = EvalRecord::build(RecordInputs {
+            entry: &e,
+            effective_layers: vec![0, 1, 2, 3],
+            layers: [
+                layer_with(vec![], Verdict::Pass),
+                layer_with(vec![], Verdict::Pass),
+                timed_out_layer(),
+                layer_with(vec![], Verdict::Pass),
+            ],
+            risk_score: Some(0.0),
+            verdict: Some(Verdict::Pass),
+            outcome: Outcome::Scanned,
+            outcome_detail: None,
+            registry_status: Some("found".into()),
+            declared_deps: Some(28),
+            vendored: true,
+            l0_metadata_version: None,
+            total_ms: 5,
+            scanned_at: "2026-09-15T00:00:00Z".into(),
+        });
+        assert!(!r.dyn_valid);
+    }
+
+    /// `layer_timed_out` keys off the note, so it must not fire on an ordinary
+    /// Docker failure — that is the distinction the error class exists to draw.
+    #[test]
+    fn an_ordinary_layer_error_is_not_a_timeout() {
+        let mut errored = LayerRecord::not_run();
+        errored.status = LayerStatus::Error;
+        errored.note = Some("Docker run failed (exit 1)".into());
+        assert!(!layer_timed_out(&errored));
+        assert!(layer_timed_out(&timed_out_layer()));
     }
 
     #[test]
@@ -812,6 +1015,7 @@ mod tests {
                 outcome_detail: None,
                 registry_status: None,
                 declared_deps: None,
+                vendored: false,
                 l0_metadata_version: None,
                 total_ms: 1,
                 scanned_at: "t".into(),
@@ -831,6 +1035,7 @@ mod tests {
             outcome_detail: None,
             registry_status: Some("not_found".into()),
             declared_deps: None,
+            vendored: false,
             l0_metadata_version: None,
             total_ms: 1,
             scanned_at: "t".into(),
@@ -856,6 +1061,7 @@ mod tests {
             outcome_detail: Some("directory not found".into()),
             registry_status: None,
             declared_deps: None,
+            vendored: false,
             l0_metadata_version: None,
             total_ms: 0,
             scanned_at: "t".into(),
@@ -885,6 +1091,7 @@ mod tests {
                 outcome_detail: None,
                 registry_status: Some("found".into()),
                 declared_deps: deps,
+                vendored: false,
                 l0_metadata_version: None,
                 total_ms: 1,
                 scanned_at: "t".into(),

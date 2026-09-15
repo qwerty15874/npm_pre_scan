@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use npm_pre_scan::layer1::run_version_diff_local;
-use npm_pre_scan::{run_layer1_local, Verdict};
+use npm_pre_scan::{run_layer1_local, run_layer1_local_paired, Verdict};
 
 // B2: Obfuscated package — eval(Buffer.from()) triggers BLOCK
 #[test]
@@ -61,6 +61,40 @@ fn b3_malicious_update_diff_blocks() {
         findings.iter().all(|f| f.get("vector").and_then(|v| v.as_str()) == Some("B3")),
         "Every version_diff finding must carry vector=B3; got: {:?}",
         findings
+    );
+}
+
+/// The harness path, as distinct from the pure-function path above.
+///
+/// `run_version_diff_local` had no production call site, so B3 measured 0/1 in
+/// arms B, C and E — not because the rule failed but because no manifest shape
+/// could hand it two versions. `Kind::Pair` supplies them; this pins that the
+/// paired Layer 1 entry point actually emits B3 rather than silently behaving
+/// like the unpaired one.
+#[test]
+fn b3_fires_through_the_paired_layer1_entry_point() {
+    let prev = Path::new("dummy_packages/dummy_malicious_update/prev");
+    let latest = Path::new("dummy_packages/dummy_malicious_update/latest");
+
+    let paired = run_layer1_local_paired("dummy_malicious_update", prev, latest);
+    assert!(
+        paired
+            .findings
+            .iter()
+            .any(|f| f.get("vector").and_then(|v| v.as_str()) == Some("B3")),
+        "the paired entry point must emit B3; got: {:?}",
+        paired.findings
+    );
+
+    // The unpaired path must stay as it was: no predecessor, so no B3.
+    let unpaired = run_layer1_local("dummy_malicious_update", latest);
+    assert!(
+        !unpaired
+            .findings
+            .iter()
+            .any(|f| f.get("vector").and_then(|v| v.as_str()) == Some("B3")),
+        "a lone directory has no version history and must not fabricate B3: {:?}",
+        unpaired.findings
     );
 }
 
