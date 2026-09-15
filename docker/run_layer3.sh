@@ -23,6 +23,28 @@ PKG_DIR="${PKG_DIR:-/pkg}"
 OUT_DIR="${OUT_DIR:-/out}"
 WORK_DIR=/work
 
+# Hydrate $WORK_DIR from the read-only package mount, plus any host-vendored
+# dependencies.
+#
+# Dependencies are resolved on the HOST (where network access already happens
+# for the tarball) and mounted read-only at $VENDOR_DIR, because this container
+# runs with --network=none and `npm install --offline` can therefore fetch
+# nothing. Without them a dependency-bearing package fails its install,
+# `require()` throws MODULE_NOT_FOUND, both are swallowed by `|| true`, and the
+# layer reports an empty profile that looks exactly like a clean package.
+#
+# Layer 3 builds the work tree once and runs all four scenarios against it, so
+# every scenario sees the same vendored tree by construction. (Layer 2 rebuilds
+# between its two installs and calls this at each rebuild, for the same reason.)
+# Copied rather than symlinked so npm may rewrite the tree without touching the
+# read-only mount.
+hydrate_work_dir() {
+    cp -r "$PKG_DIR" "$WORK_DIR"
+    if [ -n "${VENDOR_DIR:-}" ] && [ -d "$VENDOR_DIR/node_modules" ]; then
+        cp -r "$VENDOR_DIR/node_modules" "$WORK_DIR/node_modules"
+    fi
+}
+
 # strace syscall set — same as Layer 2 (musl/alpine emits plain `open`, not just `openat`).
 # unlink/unlinkat/rename*/chmod/fchmodat add write/delete visibility (wipers,
 # persistence-file drops, node_modules pollution) without tracing bare `write`
@@ -54,7 +76,7 @@ mkdir -p "$OUT_DIR"
 echo "Layer 3: starting condition-mutation analysis of $PKG_DIR" >&2
 
 # Copy the package into a writable working dir (host mount stays read-only).
-cp -r "$PKG_DIR" "$WORK_DIR"
+hydrate_work_dir
 
 # Silence npm's own registry/telemetry contact — same as Layer 2 — so only the
 # package's own behavior is observed.

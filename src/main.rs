@@ -83,6 +83,14 @@ struct Cli {
     #[arg(long, value_name = "SECS")]
     docker_timeout: Option<u64>,
 
+    /// Wall-clock budget in seconds for one package's dynamic layers COMBINED.
+    /// `--docker-timeout` bounds a single `docker run`, so a package that
+    /// stalls in both Layer 2 and Layer 3 costs twice that; this bounds the
+    /// package. Each run gets the smaller of the two remaining budgets. Unset
+    /// means unbounded (also settable via `NPM_PRE_SCAN_PACKAGE_TIMEOUT`).
+    #[arg(long, value_name = "SECS")]
+    package_timeout: Option<u64>,
+
     /// Keep full `evidence` arrays in records.jsonl. Off by default: Layer 2/3
     /// diffs can attach hundreds of events per finding, and the count alone
     /// (`evidence_count`) is what the metrics use.
@@ -290,6 +298,9 @@ fn run_eval(cli: &Cli, refresh: bool) -> ! {
     // the whole batch.
     if let Some(secs) = cli.docker_timeout {
         std::env::set_var(npm_pre_scan::docker::DOCKER_TIMEOUT_ENV, secs.to_string());
+    }
+    if let Some(secs) = cli.package_timeout {
+        std::env::set_var(npm_pre_scan::docker::PACKAGE_TIMEOUT_ENV, secs.to_string());
     }
 
     let out_dir = cli.out_dir.clone().unwrap_or_else(|| {

@@ -191,6 +191,20 @@ pub struct OutcomeCounts {
     pub skipped_missing: usize,
     pub registry_not_found: usize,
     pub registry_failed: usize,
+    /// Records DISQUALIFIED by a wall-clock kill — i.e. the timeout left
+    /// nothing observed at all.
+    ///
+    /// Deliberately **not** "records in which some layer timed out". A package
+    /// whose dynamic layers were killed but whose Layer 0/1 produced a sound
+    /// verdict is still scored, because dropping it would silently shrink a
+    /// denominator: `shadowsocks` times out in both dynamic layers, yet its
+    /// Layer 1 `shell_exfil` finding is a genuine arm F false positive, and
+    /// excluding it would have improved the headline FPR by losing a false
+    /// positive to a Docker stall.
+    ///
+    /// Layer-level stalls are visible instead in `dyn_valid` (false whenever a
+    /// dynamic layer was killed), in the per-layer `note`, and in the record's
+    /// `outcome_detail` — all in `records.jsonl`.
     pub timeout: usize,
 }
 

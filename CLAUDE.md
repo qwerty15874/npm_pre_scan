@@ -1,5 +1,5 @@
 # CLAUDE.md
-> Last updated: 2026-09-07 (v20)
+> Last updated: 2026-09-15 (v21)
 
 ---
 
@@ -14,8 +14,32 @@ Layer 2  [████████████████████] DONE   D
 Layer 3  [████████████████████] DONE   Dynamic — condition mutation, live Docker verified
 Scoring  [████████████████████] DONE   Aggregate risk score (noisy-OR, --full pipeline)
 Eval     [████████████████████] DONE   --eval batch harness + 6-arm real-corpus experiment (v17)
-Precision[██████████████████░░] PART   v20: BLOCK 0/27, any-finding FPR 48.1% → 29.6%.
+Precision[███████████████████░] PART   v21: BLOCK 0/27, any-finding FPR 29.6% → 25.9%.
+Coverage [███████████████████░] PART   v21: L2 reach 10→26 of 27; arm C 14/14 vectors (B3 closed).
 ```
+
+> ✅ **v21 coverage pass — items 7, 8 and 9 closed; the dynamic layers roughly doubled their reach.**
+> Layer 2 now runs on **26 of 27** legitimate packages (was 10) and Layer 3 on 25, with `dyn_valid`
+> 12 → **24**, because dependencies are resolved on the host and mounted read-only at `/vendor`.
+> Arm F's any-finding FPR fell **29.6% → 25.9%** while that happened, BLOCK-level FPR stayed
+> **0.0%**, and every floor held — arm D **87.58%**, arm E **97.50%**, arm C **16/16 packages** and
+> now **14/14 vectors**, B3 having produced the first true positive in the project's history.
+>
+> ⚠ **Quote the two together.** The pipeline being measured got larger at the same time the number
+> fell, so 25.9% is *not* a like-for-like improvement on 29.6%. The expansion also exposed two
+> false positives that had always existed and had merely never been looked for: `ffmpeg` (D3, fixed
+> by the same relatedness gate as `nodemailer`) and `bcrypt` (C3 `native_addon` — **C3's first
+> measured false positive**).
+>
+> ⚠ **The IOC extension adds ZERO recall.** `data/worm_iocs.txt` went from 1 hash to the full
+> 7-variant Shai-Hulud fingerprint; 44 packages now match by hash instead of 25, **0 as sole
+> detector**, arm D recall bit-identical. It is identity-level confirmation, not detection, and must
+> never be cited as if it improved recall.
+>
+> **Method note that changed a conclusion:** the before-side was re-measured at HEAD
+> (`eval/baseline/v21base/`) rather than reusing `eval/baseline/v20/`. Between the two, with no code
+> change, arm B's FPR drifted 30.0% → 26.7% because `nodemailer` was republished. Arms B and F hit
+> the live registry; always re-measure before quoting a delta.
 
 > ✅ **v18 fix pass — BLOCK is now trustworthy; SUSPECT is not yet.** Queue items 0, 1, 2, 3, 5, 6
 > are implemented and measured. **No legitimate package is BLOCK'd any more**: arm F went from 12 of
@@ -131,6 +155,51 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 ---
 
 ## Change Log
+
+### v21: Coverage pass — items 7, 8, 9; L2 reach 10→26 of 27, arm F FPR 29.6% → 25.9% (2026-09-15)
+
+Closes everything v20 left open. Full write-up: `eval/REPORT.md`, section "v21". Baselines:
+`eval/baseline/v21/`, with the drift-free before-side in `eval/baseline/v21base/`.
+
+- **Item 7 — D3's premise.** Implemented the literal §7b fix first and **measured it as wrong**:
+  `dummy_api_triggered` trips none of Layer 2's four "stronger sub-signals", so requiring one would
+  have deleted the project's own D3 detection (arm C 16/16 → 15/16). Used *relatedness* instead —
+  a D3 accusation is demoted to a capability when every observed side effect points back at the
+  package itself: its own API host (`nodemailer` → `api.nodemailer.com`) or its own binary
+  (`ffmpeg` → `/usr/bin/ffmpeg`). Narrow on four axes: bare `import_side_effect` only, SUSPECT only,
+  *every* observation must match, and never with a durable write/delete.
+  Required preserving `l2_check` — `classify_scenario` overwrote `check` with the scenario name, so
+  a credential read reaching D3 was indistinguishable from a bare side effect.
+- **Item 8a — the timeout was never detected.** `code() == Some(124)` could not match, because
+  `timeout -k` re-raises SIGKILL on itself. The diagnosis was lost **and** the `docker rm -f`
+  orphan-container cleanup lived in the same branch, so it never ran on the path that occurs. Two
+  orphaned containers from a dead PID were found running during this pass. `Outcome::Timeout` — 
+  declared, counted, classified and never once constructed — now has a construction site, but is
+  raised **only when the timeout left nothing observed**: promoting it unconditionally would have
+  dropped `shadowsocks` from arm F's benign denominator and improved the FPR by losing a false
+  positive to a Docker stall.
+- **Item 8b — `--package-timeout`** bounds both dynamic layers together (`shadowsocks` 1210 s →
+  905 s). The remaining-seconds clamp is load-bearing: `timeout 0` means *no* timeout in coreutils.
+  `dyn_valid` now also requires that no dynamic layer was killed.
+- **Item 8c — vendoring.** Dependencies resolved on the host with `npm install --ignore-scripts`,
+  mounted read-only at `/vendor`, copied into the work tree at every rebuild so Layer 2's
+  baseline/real install symmetry stays byte-identical. Layer 1 must never see `node_modules`
+  (`js_files` has no exclusion), hence the separate mount. **Safety posture changed and
+  `eval/README.md` corrected**: the host now resolves dependency trees declared by malicious
+  samples — never their own code, never executing anything.
+- **Item 9(a) — IOCs 1 → 7 variants**, the closed Shai-Hulud fingerprint across 48 compromised
+  package-versions. **Measured separately and found to add zero recall** (44 matched vs 25, 0 sole
+  detector, arm D bit-identical).
+- **Item 9(b) — `Kind::Pair`** gives B3 its first path: 0/1 → **1/1**, arm C 13/14 → **14/14**
+  vectors. `run_version_diff_local` had had zero production call sites.
+- **Item 9(c) — D2 mis-attribution root-caused** to the env scenario's `HOME` mutation; fixed in
+  `normalize_path`. Arm E's D2 noise fell 7 → 2 fires.
+- **Item 9(d) — NOT fixed, and cannot be by a rule change.** `node-ipc`'s wiper is geo-gated and
+  never executes under `--network=none`.
+
+⚠ **The coverage expansion exposed two previously-hidden false positives** — `ffmpeg` (D3) and
+`bcrypt` (C3, **C3's first**). 25.9% is therefore not a like-for-like improvement on 29.6%: the
+pipeline being measured got larger at the same time the number fell.
 
 ### v20: Precision pass 2 — arm F FPR 48.1% → 29.6%, recall bit-identical (2026-09-07)
 Scope: user asked for three precision fixes from `eval/REPORT.md`. **All three were already
@@ -1126,7 +1195,7 @@ This is the single most valuable missing measurement in the project.
 - [x] Confirm full coverage: every non-candidate in-scope vector VERIFIED (A1–E1 + D1/D2/D3 done)
 - [x] Finalize evaluation method (v17: `--eval` harness + 6 arms; see Evaluation section)
 
-### Precision fixes — NEXT BUILD TASK (from eval/REPORT.md, ranked; none implemented)
+### Precision fixes — items 1-11 ALL CLOSED as of v21 (from eval/REPORT.md, ranked)
 - [x] 1. signatures.rs: stop treating an expired signing key as tampering (11/12 BLOCK-level FPs,
         worsens with time). Verify against the key that signed; expiry → INFO. Add a pinning test.
 
@@ -1171,20 +1240,32 @@ This is the single most valuable missing measurement in the project.
 - [x] 5. A1: fold a trailing `.js`/`-js`/`_js` before the distance compare; widen top_packages.txt;
         consider scaling the distance threshold by name length (kills the d3.js→dayjs class).
 - [x] 6. typosquat/namespace: don't accuse an established package (use the age/downloads already fetched).
-- [ ] 7. D3: require one of L2's stronger sub-signals rather than a bare import_side_effect
-        (`nodemailer` FP — the fuzzer caused the network activity it flagged).
-        **Now one of only three remaining FP sources, and the cheapest of them.** After v20,
-        arm F's 8 false positives are: `obfuscation` ×4 (NOT demotable at this floor — measured,
-        see item 11), `install_script`+`worm_signature` on `node-sass` (by design),
-        `version_diff` ×2, and this one.
-- [ ] 8. Vendor dependencies into the L2/L3 mount so dep-bearing packages are analysable at all
-        (11/27 legitimate were dependency-free, of which only 10 completed a valid run; 28/40
-        malicious). Separately, cap the damage when a dependency-free package still exhausts the
-        wall clock: `shadowsocks` burned 2×605 s in arm F for no finding and no diagnosis.
-- [ ] 9. Smaller: extend worm IOCs from the DataDog corpus; a `pair` manifest kind so B3's
-        version_diff has a path through the harness (B3 is 0/1 in arms B, C and E for lack of a
-        path, not for lack of a rule); fix dummy_persistence's D2 mis-attribution; give arm E's
-        B4 case (`node-ipc@12.0.1`) a route to fire B4 rather than being rescued by B2/C1.
+- [x] 7. D3: gate on what the invoked export did. **DONE in v21 — but NOT as written here.**
+        Requiring "one of L2's stronger sub-signals" was implemented and *measured as wrong*:
+        `dummy_api_triggered`'s single `dns.lookup('evil.example.com')` trips none of the four, so
+        the literal form deletes the project's own D3 detection (arm C 16/16 → 15/16).
+        The discriminator that works is **relatedness**: demote when every observed side effect
+        points back at the package itself — its own API host (`nodemailer` → `api.nodemailer.com`)
+        or its own binary (`ffmpeg` → `/usr/bin/ffmpeg`). `ffmpeg` is the second instance and only
+        became visible once item 8 let the dynamic layers reach it.
+- [x] 8. Vendor dependencies into the L2/L3 mount. **DONE in v21.** Resolved on the host with
+        `npm install --ignore-scripts`, mounted read-only at `/vendor`. Arm F Layer 2 reach
+        **10 → 26 of 27**, Layer 3 10 → 25, `dyn_valid` 12 → 24; arm E `dyn_valid` 28 → 34.
+        The wall-clock half is also done: the timeout was never *detected* (`timeout -k` re-raises
+        SIGKILL, so `code() == Some(124)` could not match — which also meant the orphan-container
+        cleanup never ran), and `--package-timeout` now bounds both layers together
+        (`shadowsocks` 1210 s → 905 s). ⚠ Safety posture changed — see `eval/README.md`.
+- [x] 9. Smaller items. **DONE in v21, except (d), which is not doable by a rule change.**
+        (a) IOCs 1 → **7 variants** (the closed Shai-Hulud fingerprint, 48 package-versions) —
+        **measured to add ZERO recall**: 44 matched vs 25, 0 as sole detector, arm D bit-identical.
+        Identity confirmation, not detection; never cite it as recall.
+        (b) `Kind::Pair` gives B3 its first path: **0/1 → 1/1**, arm C 13/14 → **14/14** vectors.
+        (c) D2 mis-attribution root-caused to the env scenario's `HOME=/home/developer` vs the
+        baseline's `/root` — an unconditional `~/.bashrc` write produced two different path strings
+        that never cancelled. Fixed in `normalize_path`; arm E's D2 noise fell 7 → 2 fires.
+        (d) `node-ipc@12.0.1` **cannot** be made to fire B4: the wiper is geo-gated, its lookups
+        fail under `--network=none`, and the destructive branch never executes — there are no
+        writes or deletes to detect. A sandbox-coverage limit on a single observation.
 - [x] 11. **Do NOT attempt a third static demotion — measured dead end (v20).** After v20 the
         residual arm F false positives are dominated by `obfuscation` SUSPECT on four packages
         (`jquery`, `babel-cli` via bare `eval()`, lift 1.81; `lodash`, `d3` via the `Function()`

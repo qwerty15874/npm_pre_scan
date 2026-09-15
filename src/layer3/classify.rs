@@ -38,6 +38,10 @@ fn check_name_for(scenario: &str) -> &'static str {
 /// `file:...`) that produced it — visibility only, not read back into
 /// classification or scoring. It's always present in the JSON report; human
 /// output renders it under `--verbose`.
+/// Key under which a Layer 3 finding records the Layer 2 check it originated
+/// from, since `check` is overwritten with the scenario name.
+pub const L2_CHECK_KEY: &str = "l2_check";
+
 pub fn classify_scenario(scenario: &str, diff: &Layer2Profile) -> Vec<Finding> {
     let mut findings = classify(diff);
     let check_name = check_name_for(scenario);
@@ -46,6 +50,15 @@ pub fn classify_scenario(scenario: &str, diff: &Layer2Profile) -> Vec<Finding> {
     for f in &mut findings {
         f.insert("layer".to_string(), json!(3));
         f.insert("scenario".to_string(), Value::String(scenario.to_string()));
+        // Preserve which Layer 2 rule actually fired before `check` is
+        // overwritten with the scenario's name. Without this every Layer 3
+        // finding reports as `trigger_on_use`/`env_triggered`/`clock_triggered`
+        // regardless of whether it came from a bare `import_side_effect` or from
+        // a credential read, which makes them indistinguishable in the record
+        // and leaves no way to gate on the difference.
+        if let Some(original) = f.get("check").cloned() {
+            f.insert(L2_CHECK_KEY.to_string(), original);
+        }
         f.insert("check".to_string(), Value::String(check_name.to_string()));
         f.insert("vector".to_string(), Value::String(scenario.to_string()));
         f.insert(

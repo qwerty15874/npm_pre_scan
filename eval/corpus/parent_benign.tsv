@@ -9,22 +9,31 @@
 #           data/top_packages.txt. Dependency counts and install hooks verified
 #           live against registry.npmjs.org on 2026-07-30 (latest dist-tag).
 # Format  : see eval/corpus/dummies.tsv header.
-# Last updated: 2026-07-30
+# Last updated: 2026-09-15 (v21)
 #
-# ================= WHY ONLY SOME ENTRIES CARRY layers=2,3 ====================
-# The Layer 2/3 sandbox runs `npm install --offline` under `--network=none`, so
-# dependencies CANNOT be fetched. A package with dependencies fails its install
-# (swallowed by `|| true`), then `require()` throws MODULE_NOT_FOUND (swallowed
-# by the try/catch) — producing an EMPTY behaviour profile that reads as a clean
-# PASS. That is a vacuous result, not evidence of precision.
+# ============ EVERY ENTRY NOW CARRIES layers=0,1,2,3 (v21, item 8) ===========
+# It used to be that only dependency-FREE packages could carry 2,3. The Layer
+# 2/3 sandbox runs `npm install --offline` under `--network=none`, so
+# dependencies could not be fetched: a dependency-bearing package failed its
+# install (swallowed by `|| true`), `require()` then threw MODULE_NOT_FOUND
+# (swallowed by the try/catch), and the layer produced an EMPTY behaviour
+# profile that read as a clean PASS — a vacuous result, not evidence of
+# precision. 16 of these 27 packages were capped at layers=0,1 for that reason,
+# which is why the dynamic FPR was only ever measured over 11 of them.
 #
-# So `layers` here is set to 2,3 ONLY for packages verified to declare ZERO
-# dependencies. Dependency-bearing packages are capped at layers=0,1 and their
-# declared_deps is recorded, keeping them out of the dynamic denominators
-# instead of silently inflating the true-negative count.
+# v21 vendors dependencies: they are resolved on the HOST with
+# `npm install --ignore-scripts` and mounted read-only at /vendor, so the
+# sandbox can load them without ever gaining network access. All 27 entries
+# therefore request the dynamic layers.
+#
+# The `dyn_valid` safeguard has NOT been removed, only re-based: an entry is
+# admissible to the dynamic denominators when its dependencies were actually
+# supplied (`vendored`) or it never had any, AND no dynamic layer was killed by
+# the wall clock. A package whose vendoring fails still falls out of those
+# denominators rather than contributing a vacuous PASS.
 # =============================================================================
 
-# --- dependency-free: full dynamic analysis is meaningful (the FPR arm) ------
+# --- dependency-free: nothing to vendor -------------------------------------
 name	jquery	parent_benign	benign	-	0,1,2,3	0 deps; parent of jquery.js
 name	nodemailer	parent_benign	benign	-	0,1,2,3	0 deps; parent of nodemailer.js / nodemailer-js
 name	shadowsocks	parent_benign	benign	-	0,1,2,3	0 deps; parent of shadowsock
@@ -38,19 +47,19 @@ name	escape-string-regexp	parent_benign	benign	-	0,1,2,3	0 deps; smallest realis
 name	fabric	parent_benign	benign	-	0,1,2,3	0 deps BUT has a `prepare` hook — deliberate B1 false-positive probe
 
 # --- dependency-bearing: Layer 0 + Layer 1 only (see header) -----------------
-name	cross-env	parent_benign	benign	-	0,1	2 deps; parent of crossenv / cross-env.js
-name	babel-cli	parent_benign	benign	-	0,1	15 deps; parent of babelcli
-name	d3	parent_benign	benign	-	0,1	30 deps; parent of d3.js
-name	ffmpeg	parent_benign	benign	-	0,1	1 dep; parent of ffmepg
-name	grunt-cli	parent_benign	benign	-	0,1	5 deps; parent of gruntcli
-name	http-proxy	parent_benign	benign	-	0,1	3 deps; parent of http-proxy.js
-name	mongoose	parent_benign	benign	-	0,1	7 deps; parent of mongose
-name	mssql	parent_benign	benign	-	0,1	5 deps; parent of mssql.js / mssql-node
-name	mysql	parent_benign	benign	-	0,1	4 deps; parent of mysqljs
-name	proxy	parent_benign	benign	-	0,1	2 deps; parent of proxy.js
-name	express	parent_benign	benign	-	0,1	28 deps; popular control
-name	debug	parent_benign	benign	-	0,1	1 dep; also a real 2025 compromise target
-name	axios	parent_benign	benign	-	0,1	4 deps; has a `prepare` hook — B1 false-positive probe
-name	node-sass	parent_benign	benign	-	0,1	14 deps; has install+postinstall hooks — B1 false-positive probe
-name	sqlite3	parent_benign	benign	-	0,1	4 deps; has an install hook and ships a .node addon — B1/C3 probe
-name	bcrypt	parent_benign	benign	-	0,1	2 deps; has an install hook and ships a .node addon — B1/C3 probe
+name	cross-env	parent_benign	benign	-	0,1,2,3	2 deps; parent of crossenv / cross-env.js
+name	babel-cli	parent_benign	benign	-	0,1,2,3	15 deps; parent of babelcli
+name	d3	parent_benign	benign	-	0,1,2,3	30 deps; parent of d3.js
+name	ffmpeg	parent_benign	benign	-	0,1,2,3	1 dep; parent of ffmepg
+name	grunt-cli	parent_benign	benign	-	0,1,2,3	5 deps; parent of gruntcli
+name	http-proxy	parent_benign	benign	-	0,1,2,3	3 deps; parent of http-proxy.js
+name	mongoose	parent_benign	benign	-	0,1,2,3	7 deps; parent of mongose
+name	mssql	parent_benign	benign	-	0,1,2,3	5 deps; parent of mssql.js / mssql-node
+name	mysql	parent_benign	benign	-	0,1,2,3	4 deps; parent of mysqljs
+name	proxy	parent_benign	benign	-	0,1,2,3	2 deps; parent of proxy.js
+name	express	parent_benign	benign	-	0,1,2,3	28 deps; popular control
+name	debug	parent_benign	benign	-	0,1,2,3	1 dep; also a real 2025 compromise target
+name	axios	parent_benign	benign	-	0,1,2,3	4 deps; has a `prepare` hook — B1 false-positive probe
+name	node-sass	parent_benign	benign	-	0,1,2,3	14 deps; has install+postinstall hooks — B1 false-positive probe
+name	sqlite3	parent_benign	benign	-	0,1,2,3	4 deps; has an install hook and ships a .node addon — B1/C3 probe
+name	bcrypt	parent_benign	benign	-	0,1,2,3	2 deps; has an install hook and ships a .node addon — B1/C3 probe

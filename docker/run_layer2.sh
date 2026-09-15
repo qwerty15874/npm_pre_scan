@@ -39,6 +39,27 @@ PKG_DIR="${PKG_DIR:-/pkg}"
 OUT_DIR="${OUT_DIR:-/out}"
 WORK_DIR=/work
 
+# Hydrate $WORK_DIR from the read-only package mount, plus any host-vendored
+# dependencies.
+#
+# Dependencies are resolved on the HOST (where network access already happens
+# for the tarball) and mounted read-only at $VENDOR_DIR, because this container
+# runs with --network=none and `npm install --offline` can therefore fetch
+# nothing. Without them a dependency-bearing package fails its install,
+# `require()` throws MODULE_NOT_FOUND, both are swallowed by `|| true`, and the
+# layer reports an empty profile that looks exactly like a clean package.
+#
+# Called at EVERY point the work tree is (re)created, which is what keeps the
+# baseline and real installs byte-identical — the invariant documented below.
+# Copied rather than symlinked so npm may rewrite the tree without touching the
+# read-only mount.
+hydrate_work_dir() {
+    cp -r "$PKG_DIR" "$WORK_DIR"
+    if [ -n "${VENDOR_DIR:-}" ] && [ -d "$VENDOR_DIR/node_modules" ]; then
+        cp -r "$VENDOR_DIR/node_modules" "$WORK_DIR/node_modules"
+    fi
+}
+
 # strace syscall set. NOTE: alpine's musl (and older glibc) emit the plain `open`
 # syscall, not `openat`, so both must be traced or file-based detection is blind.
 # unlink/unlinkat/rename*/chmod/fchmodat add write/delete visibility (wipers,
@@ -96,7 +117,7 @@ stop_dns() {
 #      so they cancel.
 
 # ── Run 1: install baseline (pristine, scripts disabled) ──────────────────────
-cp -r "$PKG_DIR" "$WORK_DIR"
+hydrate_work_dir
 cd "$WORK_DIR"
 start_dns install_base
 strace -f \
@@ -111,7 +132,7 @@ echo "Layer 2: install baseline complete" >&2
 # while keeping the identical path (invariant 2). This is the actual install a
 # consumer would run.
 rm -rf "$WORK_DIR"
-cp -r "$PKG_DIR" "$WORK_DIR"
+hydrate_work_dir
 cd "$WORK_DIR"
 start_dns install_real
 strace -f \

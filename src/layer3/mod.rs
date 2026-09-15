@@ -64,6 +64,14 @@ fn load_scenario_profile(out_dir: &Path, scenario: &str) -> Result<Layer2Profile
 /// scenario's profile is diffed against its baseline and classified; Findings
 /// are tagged `layer: 3` + `scenario` by `classify::classify_scenario`.
 pub fn run_layer3_local(name: &str, dir: &Path) -> CheckResult {
+    run_layer3_vendored(name, dir, None)
+}
+
+/// Layer 3, with dependencies optionally vendored in from the host. See
+/// `layer2::run_layer2_vendored` — the same `/vendor` contract applies, and the
+/// fuzz scenario in particular is useless on a package whose exports cannot be
+/// required because its dependencies never installed.
+pub fn run_layer3_vendored(name: &str, dir: &Path, vendor: Option<&Path>) -> CheckResult {
     if !docker_available() {
         return error_result(name, "Docker required for Layer 3 — install Docker to enable dynamic analysis");
     }
@@ -103,7 +111,9 @@ pub fn run_layer3_local(name: &str, dir: &Path) -> CheckResult {
     let container_name = crate::docker::container_name("l3");
     let pkg_mount = format!("{}:/pkg:ro", pkg_abs.display());
     let out_mount = format!("{}:/out:rw", out_dir.path().display());
-    let argv = [
+    // See `layer2::run_layer2_vendored` for why this mount exists.
+    let vendor_mount = vendor.map(|v| format!("{}:/vendor:ro", v.display()));
+    let mut argv: Vec<&str> = vec![
         "docker",
         "run",
         "--rm",
@@ -117,16 +127,21 @@ pub fn run_layer3_local(name: &str, dir: &Path) -> CheckResult {
         &pkg_mount,
         "-v",
         &out_mount,
+    ];
+    if let Some(m) = vendor_mount.as_deref() {
+        argv.extend(["-v", m, "-e", "VENDOR_DIR=/vendor"]);
+    }
+    argv.extend([
         "-e",
         "PKG_DIR=/pkg",
         "-e",
         "OUT_DIR=/out",
         image_tag,
-    ];
+    ]);
 
     if let Err(note) = crate::docker::run_docker(
         &argv,
-        crate::docker::docker_timeout_from_env(),
+        crate::docker::effective_docker_timeout(),
         Some(&container_name),
     ) {
         return error_result(name, &note);

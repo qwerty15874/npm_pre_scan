@@ -6,6 +6,7 @@
 // known past failure mode, see CLAUDE.md v10). Centralized here instead of
 // duplicated per-layer.
 
+use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -187,6 +188,85 @@ pub fn docker_timeout_from_env() -> Option<u64> {
         .filter(|&s| s > 0)
 }
 
+/// Env var carrying the per-PACKAGE wall-clock budget, in seconds.
+///
+/// `DOCKER_TIMEOUT_ENV` bounds ONE `docker run`, so a package that stalls in
+/// both dynamic layers costs twice that — `shadowsocks` burned 2 x 605 s of arm
+/// F's 24-minute total against a 600 s per-run budget, 84% of the arm, for no
+/// finding. This bounds the package instead, and the two compose: each run gets
+/// the smaller of the per-run budget and whatever is left of the package's.
+pub const PACKAGE_TIMEOUT_ENV: &str = "NPM_PRE_SCAN_PACKAGE_TIMEOUT";
+
+/// The configured per-package budget, or `None` for unbounded. Same
+/// treat-garbage-as-unset rule as `docker_timeout_from_env`.
+pub fn package_timeout_from_env() -> Option<u64> {
+    std::env::var(PACKAGE_TIMEOUT_ENV)
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|&s| s > 0)
+}
+
+thread_local! {
+    /// When the current package's dynamic budget runs out. Thread-local because
+    /// the scan is strictly sequential (no rayon, no spawned threads), so there
+    /// is exactly one package in flight per thread.
+    static PACKAGE_DEADLINE: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Open a per-package budget. Called once before a package's dynamic layers.
+pub fn start_package_budget() {
+    PACKAGE_DEADLINE.with(|d| {
+        d.set(
+            package_timeout_from_env()
+                .map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s)),
+        )
+    });
+}
+
+/// Close the current package's budget, so a later un-budgeted run is unbounded
+/// rather than inheriting a stale deadline.
+pub fn clear_package_budget() {
+    PACKAGE_DEADLINE.with(|d| d.set(None));
+}
+
+/// Seconds left on the package budget, clamped to at least 1.
+///
+/// The clamp is load-bearing, not cosmetic: `timeout 0 CMD` means **no timeout**
+/// in GNU coreutils, so letting an exhausted budget reach the command line as
+/// `0` would turn the tightest case into an unbounded run — the precise
+/// opposite of the intent.
+fn package_budget_remaining() -> Option<u64> {
+    PACKAGE_DEADLINE
+        .with(|d| d.get())
+        .map(|deadline| remaining_secs(deadline, std::time::Instant::now()))
+}
+
+/// Whole seconds from `now` to `deadline`, never below 1. Split out from
+/// `package_budget_remaining` so the clamp is testable without a clock.
+fn remaining_secs(deadline: std::time::Instant, now: std::time::Instant) -> u64 {
+    deadline.saturating_duration_since(now).as_secs().max(1)
+}
+
+/// The budget for the next `docker run`: the per-run budget, further clamped by
+/// whatever remains of the per-package budget. Either may be absent.
+pub fn effective_docker_timeout() -> Option<u64> {
+    combine_budgets(docker_timeout_from_env(), package_budget_remaining())
+}
+
+/// Smaller-of, treating absent as unbounded. Pure, so the composition rule is
+/// pinned without touching the process environment.
+fn combine_budgets(per_run: Option<u64>, remaining: Option<u64>) -> Option<u64> {
+    match (per_run, remaining) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
 /// A unique container name for one analysis run, so a timed-out container can be
 /// force-removed by name. Process id plus a monotonic counter — unique within and
 /// across concurrent processes, with no dependency on a clock or RNG.
@@ -201,8 +281,50 @@ pub fn container_name(layer: &str) -> String {
     )
 }
 
-/// `timeout`'s exit status when it had to kill the command.
+/// `timeout`'s exit status when it gave up within its grace period.
 const TIMEOUT_EXIT_CODE: i32 = 124;
+
+/// The signal `-k` escalates to. Spelled out rather than pulled from `libc`,
+/// which this crate does not otherwise depend on.
+const SIGKILL: i32 = 9;
+
+/// Marker substring carried by every wall-clock-budget failure note.
+///
+/// The evaluation harness classifies a run's `Outcome` from the layer note, and
+/// matching on this constant keeps it from re-deriving the exit-status rules
+/// below (which is how they came to disagree in the first place).
+pub const TIMEOUT_NOTE_MARKER: &str = "wall-clock budget";
+
+/// The note a budget kill produces.
+pub fn timeout_note(secs: Option<u64>) -> String {
+    match secs {
+        Some(s) => format!(
+            "docker run exceeded its {}s wall-clock budget and was killed",
+            s
+        ),
+        None => "docker run exceeded its wall-clock budget and was killed".to_string(),
+    }
+}
+
+/// Whether an exit status means "the wall-clock budget killed this run".
+///
+/// There are **two** shapes, and testing only the first is why `shadowsocks`
+/// was mis-recorded in the v20 arm F run: both its layers were killed at 605 s
+/// yet each was filed as a generic error (`l2_status=error`, note
+/// `Docker run failed (exit signal: 9 (SIGKILL))`) and `metrics.json` still
+/// reported `"timeout": 0`.
+///
+/// * `timeout` gave up inside its grace period → it exits **124**.
+/// * The command ignored SIGTERM and `-k 5` escalated → GNU `timeout` re-raises
+///   that same signal **on itself** so the caller can observe a signal death.
+///   `ExitStatus::code()` is then `None`, never `Some(124)`.
+///
+/// The signal shape is attributed to the budget only when one was configured.
+/// With no `-k` in play a SIGKILL belongs to somebody else — an OOM kill, an
+/// operator — and must keep reporting as a plain error.
+fn is_timeout_status(code: Option<i32>, signal: Option<i32>, secs: Option<u64>) -> bool {
+    code == Some(TIMEOUT_EXIT_CODE) || (secs.is_some() && signal == Some(SIGKILL))
+}
 
 /// Run a docker command, optionally time-bounded.
 ///
@@ -227,15 +349,12 @@ pub fn run_docker(
     match status {
         Ok(s) if s.success() => Ok(()),
         Ok(s) => {
-            if s.code() == Some(TIMEOUT_EXIT_CODE) {
+            if is_timeout_status(s.code(), s.signal(), secs) {
                 if let Some(cname) = container_name {
                     // Best-effort: the container may already be gone.
                     let _ = Command::new("docker").args(["rm", "-f", cname]).output();
                 }
-                Err(format!(
-                    "docker run exceeded its {}s wall-clock budget and was killed",
-                    secs.unwrap_or(0)
-                ))
+                Err(timeout_note(secs))
             } else {
                 Err(format!("Docker run failed (exit {})", s))
             }
@@ -298,6 +417,86 @@ mod tests {
             timeout_argv(Some(30), &["docker"]),
             vec!["timeout", "-k", "5", "30", "docker"]
         );
+    }
+
+    /// The shape that actually occurred and was mis-filed: `timeout -k 5`
+    /// escalated to SIGKILL, GNU `timeout` re-raised it on itself, so `code()`
+    /// is `None`. `shadowsocks` hit this in BOTH layers of the v20 arm F run
+    /// (605011 ms and 605016 ms against a 600 s budget) and each was recorded
+    /// as a generic error, leaving `metrics.json` claiming `"timeout": 0`.
+    #[test]
+    fn a_kill_escalation_under_a_budget_is_a_timeout() {
+        assert!(
+            is_timeout_status(None, Some(SIGKILL), Some(600)),
+            "SIGKILL with a configured budget is the -k escalation path"
+        );
+    }
+
+    /// The documented shape: `timeout` gave up inside its grace period.
+    #[test]
+    fn exit_124_is_a_timeout_with_or_without_a_budget() {
+        assert!(is_timeout_status(Some(TIMEOUT_EXIT_CODE), None, Some(600)));
+        assert!(is_timeout_status(Some(TIMEOUT_EXIT_CODE), None, None));
+    }
+
+    /// The class this must never absorb: with no budget configured there is no
+    /// `-k` in play, so a SIGKILL came from somewhere else (an OOM kill, an
+    /// operator) and must keep reporting as a plain error rather than being
+    /// silently relabelled a timeout.
+    #[test]
+    fn a_kill_without_a_budget_is_not_a_timeout() {
+        assert!(!is_timeout_status(None, Some(SIGKILL), None));
+    }
+
+    #[test]
+    fn an_ordinary_nonzero_exit_is_not_a_timeout() {
+        assert!(!is_timeout_status(Some(1), None, Some(600)));
+        assert!(!is_timeout_status(Some(125), None, Some(600)));
+        // SIGTERM alone is not the escalation — `-k` kills with SIGKILL.
+        assert!(!is_timeout_status(None, Some(15), Some(600)));
+    }
+
+    /// Every budget-kill note must carry the marker the eval harness matches on,
+    /// so `Outcome::Timeout` cannot drift away from what `run_docker` produces.
+    #[test]
+    fn every_timeout_note_carries_the_harness_marker() {
+        assert!(timeout_note(Some(600)).contains(TIMEOUT_NOTE_MARKER));
+        assert!(timeout_note(None).contains(TIMEOUT_NOTE_MARKER));
+        assert!(
+            timeout_note(Some(600)).contains("600s"),
+            "the budget belongs in the note: {}",
+            timeout_note(Some(600))
+        );
+    }
+
+    /// An exhausted package budget must still ask for at least one second.
+    /// `timeout 0 CMD` means **no timeout** in GNU coreutils, so letting a spent
+    /// budget reach the command line as `0` would make the tightest case
+    /// unbounded — the exact opposite of what the budget is for.
+    #[test]
+    fn an_exhausted_package_budget_never_reaches_the_command_line_as_zero() {
+        let now = std::time::Instant::now();
+        let already_past = now - std::time::Duration::from_secs(30);
+        assert_eq!(remaining_secs(already_past, now), 1);
+        assert_eq!(remaining_secs(now, now), 1);
+    }
+
+    #[test]
+    fn remaining_secs_counts_down_toward_the_deadline() {
+        let now = std::time::Instant::now();
+        let deadline = now + std::time::Duration::from_secs(120);
+        assert_eq!(remaining_secs(deadline, now), 120);
+    }
+
+    /// The composition rule: each run gets the smaller of the two budgets, and
+    /// an absent budget means unbounded on that axis rather than zero.
+    #[test]
+    fn a_run_gets_the_smaller_of_the_run_and_package_budgets() {
+        assert_eq!(combine_budgets(Some(600), Some(90)), Some(90));
+        assert_eq!(combine_budgets(Some(60), Some(900)), Some(60));
+        assert_eq!(combine_budgets(Some(600), None), Some(600));
+        assert_eq!(combine_budgets(None, Some(90)), Some(90));
+        assert_eq!(combine_budgets(None, None), None);
     }
 
     // `ensure_layer_image` is deliberately NOT unit-tested: it would invoke

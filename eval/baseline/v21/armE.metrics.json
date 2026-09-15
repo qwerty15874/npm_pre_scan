@@ -1,0 +1,348 @@
+{
+  "provenance": {
+    "tool_version": "0.1.0",
+    "started_at": "2026-09-15T10:56:30.049182005+00:00",
+    "finished_at": "2026-09-15T11:18:45.349137829+00:00",
+    "eval_mode": "full",
+    "manifests": [
+      "eval/corpus/datadog_dynamic.tsv"
+    ],
+    "entry_count": 40,
+    "docker_version": "Docker version 29.7.2, build a7dcaa6fdb",
+    "ptrace_probe": "granted",
+    "docker_timeout_secs": 600,
+    "top_list_refreshed": false,
+    "top_packages_len": 1142,
+    "top_scoped_len": 94,
+    "host_os": "linux"
+  },
+  "record_count": 40,
+  "outcomes": {
+    "scanned": 40,
+    "skipped_missing": 0,
+    "registry_not_found": 0,
+    "registry_failed": 0,
+    "timeout": 0
+  },
+  "overall": {
+    "true_positive": 39,
+    "false_positive": 0,
+    "true_negative": 0,
+    "false_negative": 1,
+    "artifact_fn": 0,
+    "error": 0,
+    "skipped": 0
+  },
+  "overall_rates": {
+    "scored": 40,
+    "recall": 0.975,
+    "precision": 1.0,
+    "fpr": null,
+    "f1": 0.9873417721518987,
+    "accuracy": 0.975
+  },
+  "overall_block_only": {
+    "true_positive": 27,
+    "false_positive": 0,
+    "true_negative": 0,
+    "false_negative": 13,
+    "artifact_fn": 0,
+    "error": 0,
+    "skipped": 0
+  },
+  "overall_block_only_rates": {
+    "scored": 40,
+    "recall": 0.675,
+    "precision": 1.0,
+    "fpr": null,
+    "f1": 0.8059701492537313,
+    "accuracy": 0.675
+  },
+  "by_group": [
+    {
+      "group": "datadog",
+      "confusion": {
+        "true_positive": 39,
+        "false_positive": 0,
+        "true_negative": 0,
+        "false_negative": 1,
+        "artifact_fn": 0,
+        "error": 0,
+        "skipped": 0
+      },
+      "rates": {
+        "scored": 40,
+        "recall": 0.975,
+        "precision": 1.0,
+        "fpr": null,
+        "f1": 0.9873417721518987,
+        "accuracy": 0.975
+      }
+    }
+  ],
+  "by_layer": [
+    {
+      "layer": 0,
+      "ran": 0,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 40,
+      "block": 0,
+      "suspect": 0,
+      "pass": 0,
+      "finding_count": 0,
+      "sole_detector": 0,
+      "false_hits": 0,
+      "ms_p50": 0,
+      "ms_p90": 0,
+      "ms_max": 0,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 1,
+      "ran": 40,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 0,
+      "block": 21,
+      "suspect": 18,
+      "pass": 1,
+      "finding_count": 186,
+      "sole_detector": 13,
+      "false_hits": 0,
+      "ms_p50": 3,
+      "ms_p90": 6,
+      "ms_max": 54,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 2,
+      "ran": 40,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 0,
+      "block": 14,
+      "suspect": 12,
+      "pass": 8,
+      "finding_count": 56,
+      "sole_detector": 0,
+      "false_hits": 0,
+      "ms_p50": 11238,
+      "ms_p90": 27273,
+      "ms_max": 31531,
+      "excluded_not_dyn_valid": 6
+    },
+    {
+      "layer": 3,
+      "ran": 40,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 0,
+      "block": 1,
+      "suspect": 1,
+      "pass": 32,
+      "finding_count": 7,
+      "sole_detector": 0,
+      "false_hits": 0,
+      "ms_p50": 9072,
+      "ms_p90": 46215,
+      "ms_max": 57002,
+      "excluded_not_dyn_valid": 6
+    }
+  ],
+  "by_vector": [
+    {
+      "vector": "A1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "A2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "A3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "A4",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "META",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "B1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 35
+    },
+    {
+      "vector": "B2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 34
+    },
+    {
+      "vector": "B3",
+      "expected": 1,
+      "detected": 0,
+      "missed": 1,
+      "recall": 0.0,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "B4",
+      "expected": 1,
+      "detected": 0,
+      "missed": 1,
+      "recall": 0.0,
+      "false_hits": 0,
+      "total_fires": 1
+    },
+    {
+      "vector": "C1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 19
+    },
+    {
+      "vector": "C2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 10
+    },
+    {
+      "vector": "C3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 2
+    },
+    {
+      "vector": "D3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "E1",
+      "expected": 4,
+      "detected": 4,
+      "missed": 0,
+      "recall": 1.0,
+      "false_hits": 0,
+      "total_fires": 15
+    }
+  ],
+  "timing": {
+    "total_ms": 1417310,
+    "p50": 22327,
+    "p90": 67117,
+    "p99": 88367,
+    "max": 88367,
+    "slowest": [
+      [
+        "sample:malicious_intent/rn-native-portals/6.5.8/2024-11-16-rn-native-portals-v6.5.8.zip",
+        88367
+      ],
+      [
+        "sample:malicious_intent/operation-server-sdk/6.5.8/2024-11-15-operation-server-sdk-v6.5.8.zip",
+        88313
+      ],
+      [
+        "sample:malicious_intent/inhouse-root/10.6.9/2025-05-12-inhouse-root-v10.6.9.zip",
+        88254
+      ],
+      [
+        "sample:malicious_intent/atlaskit-registry/1.0.7/2025-05-11-atlaskit-registry-v1.0.7.zip",
+        68168
+      ],
+      [
+        "sample:malicious_intent/blocks-nextjs/9999.9999.10027/2025-05-26-blocks-nextjs-v9999.9999.10027.zip",
+        67117
+      ],
+      [
+        "sample:malicious_intent/metrics-probe-64b2/1.0.0/2026-06-17-metrics-probe-64b2-v1.0.0.zip",
+        64523
+      ],
+      [
+        "sample:malicious_intent/foundry-toolkit/1.0.1/2026-02-26-foundry-toolkit-v1.0.1.zip",
+        60037
+      ],
+      [
+        "sample:malicious_intent/dependent-controlling-attributes/1.0.0/2025-11-11-dependent-controlling-attributes-v1.0.0.zip",
+        54972
+      ],
+      [
+        "sample:malicious_intent/react-vis-website/1.1.0/2024-12-16-react-vis-website-v1.1.0.zip",
+        53393
+      ],
+      [
+        "sample:malicious_intent/harper-web/1.0.0/2025-02-17-harper-web-v1.0.0.zip",
+        53280
+      ]
+    ]
+  }
+}

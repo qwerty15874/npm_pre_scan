@@ -65,10 +65,27 @@ is that all 18 true positives now come from name detection rather than from a si
 - Sample zips stay **encrypted at rest** in the gitignored `eval/samples/` (password `infected`,
   as published).
 - Extraction happens into a `TempDir` for the duration of a single scan, then is dropped.
-- Nothing is ever installed or executed on the host. Layers 2 and 3 run inside the existing
-  container: `--network=none`, in-container DNS sinkhole, read-only `/pkg` mount, and a
-  wall-clock cap via `--docker-timeout`.
+- **Nothing is ever executed on the host.** Layers 2 and 3 run inside the existing container:
+  `--network=none`, in-container DNS sinkhole, read-only `/pkg` mount, and a wall-clock cap via
+  `--docker-timeout` / `--package-timeout`.
 - Never `npm install` one of these outside that container.
+
+⚠ **v21 changed one part of this posture, deliberately — read it before running arms C, E or F.**
+To lift the dynamic layers' coverage ceiling (item 8), the host now resolves a scanned package's
+**dependencies** with `npm install --ignore-scripts` into a throwaway directory, which is then
+mounted read-only at `/vendor`. For the malicious corpora that means the host downloads the
+dependency trees *declared by* real malicious packages. Specifically:
+
+- The malicious package's **own code is never installed** — only its `package.json` (and any
+  lockfile) is copied into the vendor directory, so npm resolves dependencies and nothing else.
+- `--ignore-scripts` applies to the whole tree, so **no lifecycle script runs**, from the sample or
+  from any dependency. Install-hook behaviour is what Layer 2 exists to observe, and it is still
+  observed only inside the container.
+- The result is therefore the same class of operation the tool already performs on the host:
+  downloading package tarballs without running them.
+
+The earlier blanket phrasing "nothing is ever installed on the host" no longer holds for
+dependencies, and is corrected above rather than quietly left in place.
 
 ---
 
@@ -84,15 +101,15 @@ kind  id  group  label  vectors  layers  [note]
 
 | Column | Values |
 |---|---|
-| `kind` | `name` \| `version` \| `dir` \| `holder` \| `sample` |
-| `id` | package name, `name@version`, a repo-relative dir, or a sample path |
+| `kind` | `name` \| `version` \| `dir` \| `holder` \| `sample` \| `pair` |
+| `id` | package name, `name@version`, a repo-relative dir, a sample path, or `prevdir::latestdir` |
 | `group` | `real_malicious` \| `dummy` \| `parent_benign` \| `datadog` |
 | `label` | `malicious` \| `benign` — the ground truth |
 | `vectors` | comma-separated `A1`–`E1`/`META`, or `-` for none/unknown |
 | `layers` | comma-separated subset of `0,1,2,3`, or `-` |
 | `note` | optional free text, echoed into the record |
 
-`kind` distinguishes the four ways a package can be reached, plus one ground-truth annotation:
+`kind` distinguishes the ways a package can be reached, plus one ground-truth annotation:
 
 - `name` — registry name, `dist-tags.latest`.
 - `version` — `name@version`, tarball pinned via `tarball::get_version_tarball_url`.
@@ -103,6 +120,18 @@ kind  id  group  label  vectors  layers  [note]
   classified `ARTIFACT_FN`, never `FN` (see below). ⚠ **Inert as of the v17 run** — see the
   `ARTIFACT_FN` note below.
 - `sample` — a DataDog sample zip path.
+- `pair` — two local directories, `prev::latest`, expressing one package across a version
+  transition. Layer 0 never applies. The **latest** directory is the entry under test and is what
+  `path`, `entry_id` and every layer scan refer to; `prev` is an input, supplying the predecessor
+  that `version_diff` (B3) needs. The package name is the last path segment the two share
+  (`…/dummy_malicious_update/{prev,latest}` → `dummy_malicious_update`).
+
+  This kind exists because B3 reported **0/1 in arms B, C and E alike for want of a manifest shape,
+  not for want of a rule**: `run_version_diff_local` had no production call site at all, so the one
+  check that needs two versions could never be reached from a corpus. A malformed pair (one path,
+  an empty half, or both halves identical) is a parse error rather than a half-scan, because
+  diffing against a missing predecessor would report every file as newly introduced — a fabricated
+  detection, which is worse than a miss.
 
 `holder` and `sample` are **manifest annotations, not runtime inferences.** Deriving ground truth
 at scan time (e.g. sniffing `description == "security holding package"`) is how an evaluation

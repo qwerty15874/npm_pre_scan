@@ -9,6 +9,7 @@ version	crossenv@1.0.1	real_malicious	malicious	A1,B1	0,1	pinned historical vers
 dir	dummy_packages/dummy_benign_l3	dummy	benign	-	1,2,3	precision control
 holder	ffmepg	real_malicious	malicious	A1	0	security-holding stub
 sample	malicious_intent/evil-pkg/1.0.0/2025-01-01-evil-pkg-v1.0.0.zip	datadog	malicious	-	1,2,3	datadog sample
+pair	dummy_packages/dummy_malicious_update/prev::dummy_packages/dummy_malicious_update/latest	dummy	malicious	B3	1	prev/latest pair; B3 carrier
 
 # no-note form: exactly 6 columns, trailing `note` omitted
 name	cross-env	parent_benign	benign	-	0,1

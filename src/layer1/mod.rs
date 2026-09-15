@@ -106,12 +106,34 @@ pub fn run_version_diff_local(prev_dir: &Path, latest_dir: &Path) -> Vec<Finding
 /// Run Layer 1 static analysis on a local package directory (for testing dummy packages).
 /// Version-diff is skipped — no registry version history is available locally.
 pub fn run_layer1_local(package_name: &str, dir: &Path) -> CheckResult {
+    run_layer1_local_inner(package_name, dir, None)
+}
+
+/// Run Layer 1 on `latest_dir`, additionally diffing it against `prev_dir` so
+/// B3 (`version_diff`) has a path that needs no registry history.
+///
+/// `run_layer1_local` cannot do this — a lone directory carries no predecessor —
+/// which is why B3 measured 0/1 in arms B, C and E despite the rule working and
+/// a prev/latest fixture pair sitting in `dummy_packages/`. Its recall was
+/// unmeasured, not zero.
+pub fn run_layer1_local_paired(
+    package_name: &str,
+    prev_dir: &Path,
+    latest_dir: &Path,
+) -> CheckResult {
+    run_layer1_local_inner(package_name, latest_dir, Some(prev_dir))
+}
+
+fn run_layer1_local_inner(package_name: &str, dir: &Path, prev_dir: Option<&Path>) -> CheckResult {
     let pkg_json_path = dir.join("package.json");
     let pkg_json: Value = std::fs::read_to_string(&pkg_json_path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(Value::Null);
 
-    let findings = collect_dir_findings(&pkg_json, dir);
+    let mut findings = collect_dir_findings(&pkg_json, dir);
+    if let Some(prev) = prev_dir {
+        findings.extend(run_version_diff_local(prev, dir));
+    }
     build_result(package_name, findings)
 }

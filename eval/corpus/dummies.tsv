@@ -28,8 +28,8 @@ name	lodash-utils-fix	dummy	malicious	A4	0	A4 combosquat: popular token + suspic
 
 # --- Layer 1 static fixtures -------------------------------------------------
 dir	dummy_packages/dummy_obfuscated	dummy	malicious	B2,B1	1	eval(Buffer.from(base64)) + postinstall
-dir	dummy_packages/dummy_malicious_update/latest	dummy	malicious	B3	1	B3 carrier; diffed against ../prev by run_version_diff_local
-dir	dummy_packages/dummy_malicious_update/prev	dummy	benign	-	1	B3 baseline control (benign predecessor)
+pair	dummy_packages/dummy_malicious_update/prev::dummy_packages/dummy_malicious_update/latest	dummy	malicious	B3	1	B3 carrier, diffed against its predecessor (was a `dir` row, for which B3 had no path)
+dir	dummy_packages/dummy_malicious_update/prev	dummy	benign	-	1	B3 baseline control (benign predecessor), also scored standalone as a precision control
 dir	dummy_packages/dummy_shai_hulud/infected	dummy	malicious	E1	1,2,3	E1 worm: static signature + live api.github.com egress
 dir	dummy_packages/dummy_shai_hulud/clean	dummy	benign	-	1,2,3	E1 precision control
 

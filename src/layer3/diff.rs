@@ -59,7 +59,42 @@ fn normalize_path(path: &str) -> String {
     if path.ends_with(".tmp") || path.ends_with('~') {
         return "/TMP_SUFFIXED".to_string();
     }
+    // Home-directory roots. The env scenario runs with HOME=/home/developer
+    // (docker/run_layer3.sh) while the baseline runs as root, so a write derived
+    // from `os.homedir()` lands on two DIFFERENT absolute paths and survives the
+    // set difference as a phantom "new event" even when it is unconditional.
+    //
+    // That is the whole of `dummy_persistence`'s D2 mis-attribution: the fixture
+    // appends to `~/.bashrc` at import time in both runs, and the env scenario
+    // took credit for behaviour it did not trigger. Folding the root makes the
+    // identical write cancel, which is exactly what the diff is for. A write
+    // that genuinely happens ONLY under mutation still has no baseline
+    // counterpart to cancel against, so real env-gating is untouched.
+    if let Some(folded) = fold_home_root(path) {
+        return folded;
+    }
     path.to_string()
+}
+
+/// Fold a home-directory root (`/root`, `/home/<user>`) to a stable `$HOME`
+/// token. Returns `None` when the path is not home-rooted.
+fn fold_home_root(path: &str) -> Option<String> {
+    if path == "/root" {
+        return Some("$HOME".to_string());
+    }
+    if let Some(tail) = path.strip_prefix("/root/") {
+        return Some(format!("$HOME/{}", tail));
+    }
+    let rest = path.strip_prefix("/home/")?;
+    match rest.find('/') {
+        // "/home/<user>/<tail>" -> "$HOME/<tail>"; `tail` keeps its leading "/".
+        Some(slash) => {
+            let (user, tail) = rest.split_at(slash);
+            (!user.is_empty()).then(|| format!("$HOME{}", tail))
+        }
+        // "/home/<user>" -> "$HOME"; bare "/home/" folds to nothing.
+        None => (!rest.is_empty()).then(|| "$HOME".to_string()),
+    }
 }
 
 /// Fold a `.<name>-<random>` staging-directory segment under `node_modules`
@@ -228,6 +263,44 @@ mod tests {
             file_opens: vec!["/work/.npmrc".to_string(), "/etc/passwd".to_string()],
             ..Default::default()
         }
+    }
+
+    /// The `dummy_persistence` D2 mis-attribution, reproduced exactly.
+    ///
+    /// The fixture appends to `os.homedir()/.bashrc` UNCONDITIONALLY at import,
+    /// so it happens in the baseline too — but the baseline runs as root and the
+    /// env scenario runs with `HOME=/home/developer`, so the two absolute paths
+    /// differed and the write surfaced as a "new event". Arm C recorded the
+    /// result as `env_triggered BLOCK D2`, i.e. Layer 3 claiming credit for
+    /// behaviour the env mutation did not trigger.
+    #[test]
+    fn an_unconditional_home_write_cancels_across_a_home_mutation() {
+        let mut baseline = base_profile();
+        baseline.file_writes.push("/root/.bashrc".to_string());
+        let mut mutated = base_profile();
+        mutated
+            .file_writes
+            .push("/home/developer/.bashrc".to_string());
+
+        let diff = diff_profiles(&baseline, &mutated);
+        assert!(
+            diff.file_writes.is_empty(),
+            "an unconditional ~/.bashrc write must cancel, not become a D2 finding: {:?}",
+            diff.file_writes
+        );
+    }
+
+    #[test]
+    fn fold_home_root_handles_both_roots_and_leaves_other_paths_alone() {
+        assert_eq!(fold_home_root("/root/.bashrc").as_deref(), Some("$HOME/.bashrc"));
+        assert_eq!(fold_home_root("/root").as_deref(), Some("$HOME"));
+        assert_eq!(fold_home_root("/home/dev/.npmrc").as_deref(), Some("$HOME/.npmrc"));
+        assert_eq!(fold_home_root("/home/developer").as_deref(), Some("$HOME"));
+        // Not home-rooted, and the near-misses that must not be folded.
+        assert_eq!(fold_home_root("/work/.bashrc"), None);
+        assert_eq!(fold_home_root("/etc/passwd"), None);
+        assert_eq!(fold_home_root("/home/"), None);
+        assert_eq!(fold_home_root("/rootkit/evil"), None);
     }
 
     #[test]
@@ -484,7 +557,11 @@ mod tests {
         mutated.file_writes.push("/root/.bashrc".to_string());
 
         let diff = diff_profiles(&baseline, &mutated);
-        assert_eq!(diff.file_writes, vec!["/root/.bashrc".to_string()]);
+        // Home roots now fold to `$HOME` (see `fold_home_root`), the same way
+        // temp dirs already folded to `/tmp/TMP`. The behaviour under test is
+        // unchanged — a write present ONLY under mutation still survives the
+        // diff — it is just reported under the normalized token.
+        assert_eq!(diff.file_writes, vec!["$HOME/.bashrc".to_string()]);
     }
 
     #[test]

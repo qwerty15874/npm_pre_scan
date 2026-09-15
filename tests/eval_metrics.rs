@@ -58,6 +58,7 @@ fn record(
         outcome_detail: None,
         registry_status: Some("found".into()),
         declared_deps: deps,
+        vendored: false,
         l0_metadata_version: None,
         total_ms,
         scanned_at: "2026-07-30T00:00:00Z".into(),

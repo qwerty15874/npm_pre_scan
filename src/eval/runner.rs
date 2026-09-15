@@ -182,6 +182,7 @@ fn record_from_scan(
         layer_ms,
         registry_status,
         declared_deps,
+        vendored,
     } = scan;
 
     let mut layer_records = [
@@ -203,14 +204,33 @@ fn record_from_scan(
     // A layer whose result carries the "not found on the npm registry" note tells
     // us the package is gone; a fetch that *failed* is a different fact entirely
     // and must not be scored (see `registry::FetchStatus`).
+    //
+    // A wall-clock kill is a THIRD fact, and how far it propagates matters. It
+    // disqualifies the record only when it left nothing observed; when the
+    // static layers ran and produced a sound verdict it is a *layer* fact, not a
+    // *record* fact, and the record must stay in the denominators. Promoting it
+    // unconditionally would have dropped `shadowsocks` — whose Layer 1
+    // `shell_exfil` finding is a genuine arm F false positive — out of the
+    // benign denominator entirely, improving the headline FPR from 27 packages
+    // to 26 for no reason but a Docker stall.
+    let timeout_note = layer_records
+        .iter()
+        .find(|l| crate::eval::record::layer_timed_out(l))
+        .and_then(|l| l.note.clone());
+    let observed_something = layer_records.iter().any(|l| l.ran());
+
     let outcome = match &registry_status {
         Some(crate::registry::FetchStatus::NotFound) => Outcome::RegistryNotFound,
         Some(crate::registry::FetchStatus::Failed(_)) => Outcome::RegistryFailed,
+        _ if timeout_note.is_some() && !observed_something => Outcome::Timeout,
         _ => Outcome::Scanned,
     };
     let outcome_detail = match &registry_status {
         Some(crate::registry::FetchStatus::Failed(reason)) => Some(reason.clone()),
-        _ => None,
+        // Carried even when the record is still scored, so a stall is always
+        // diagnosable from `results.csv` instead of having to be reconstructed
+        // from per-layer millisecond columns.
+        _ => timeout_note,
     };
 
     // A pinned scan reads pinned content but latest-based Layer 0 metadata.
@@ -226,6 +246,7 @@ fn record_from_scan(
         layers: layer_records,
         risk_score: Some(report.risk_score),
         verdict: Some(report.verdict),
+        vendored,
         outcome,
         outcome_detail,
         registry_status: registry_status.as_ref().map(|s| s.as_str().to_string()),
@@ -240,6 +261,7 @@ fn record_from_scan(
 fn unscannable(entry: &CorpusEntry, outcome: Outcome, detail: &str, scanned_at: String) -> EvalRecord {
     EvalRecord::build(RecordInputs {
         entry,
+        vendored: false,
         effective_layers: Vec::new(),
         layers: [
             LayerRecord::not_run(),
@@ -284,6 +306,7 @@ pub fn scan_entry_name_only(
 
     EvalRecord::build(RecordInputs {
         entry,
+        vendored: false,
         effective_layers: vec![0],
         layers,
         risk_score: Some(report.risk_score),
@@ -351,6 +374,34 @@ fn scan_entry(
                 );
             }
             let scan = crate::run_full_local_collect(&entry.package, &dir, *effective);
+            record_from_scan(
+                entry,
+                effective,
+                scan,
+                cfg.keep_evidence,
+                started.elapsed().as_millis() as u64,
+                scanned_at.to_string(),
+            )
+        }
+
+        Kind::Pair => {
+            let prev = cfg.base_dir.join(entry.path_prev.as_deref().unwrap_or_default());
+            let latest = cfg.base_dir.join(entry.path.as_deref().unwrap_or_default());
+            // Both halves must exist: diffing against a missing predecessor
+            // would report every file in `latest` as newly introduced, which is
+            // a fabricated B3 detection rather than a missing fixture.
+            for d in [&prev, &latest] {
+                if !d.is_dir() {
+                    return unscannable(
+                        entry,
+                        Outcome::SkippedMissing,
+                        &format!("directory not found: {}", d.display()),
+                        scanned_at.to_string(),
+                    );
+                }
+            }
+            let scan =
+                crate::run_pair_local_collect(&entry.package, &prev, &latest, *effective);
             record_from_scan(
                 entry,
                 effective,

@@ -53,6 +53,16 @@ fn finding(severity: &str, message: &str) -> Finding {
 /// via `profile::parse_strace`/`parse_dns`, classifies them into `Vec<Finding>`
 /// via `classify::classify`, and derives a verdict.
 pub fn run_layer2_local(name: &str, dir: &Path) -> CheckResult {
+    run_layer2_vendored(name, dir, None)
+}
+
+/// Layer 2, with dependencies optionally vendored in from the host.
+///
+/// `vendor` points at a host directory containing a resolved `node_modules`;
+/// the container copies it into the work tree before each install so both the
+/// baseline and the real run see a byte-identical tree (see
+/// `docker/run_layer2.sh`'s install-symmetry invariant).
+pub fn run_layer2_vendored(name: &str, dir: &Path, vendor: Option<&Path>) -> CheckResult {
     if !docker_available() {
         return error_result(name, "Docker required for Layer 2 — install Docker to enable dynamic analysis");
     }
@@ -94,7 +104,14 @@ pub fn run_layer2_local(name: &str, dir: &Path) -> CheckResult {
     let container_name = crate::docker::container_name("l2");
     let pkg_mount = format!("{}:/pkg:ro", pkg_abs.display());
     let out_mount = format!("{}:/out:rw", out_dir.path().display());
-    let argv = [
+    // Dependencies resolved on the host, mounted read-only. Without this the
+    // container's `npm install --offline` under `--network=none` cannot fetch
+    // anything, `require()` throws MODULE_NOT_FOUND, both are swallowed by
+    // `|| true`, and the layer reports an empty profile indistinguishable from
+    // a clean package — which is why the dynamic layers could only ever analyse
+    // dependency-free packages.
+    let vendor_mount = vendor.map(|v| format!("{}:/vendor:ro", v.display()));
+    let mut argv: Vec<&str> = vec![
         "docker",
         "run",
         "--rm",
@@ -106,16 +123,21 @@ pub fn run_layer2_local(name: &str, dir: &Path) -> CheckResult {
         &pkg_mount,
         "-v",
         &out_mount,
+    ];
+    if let Some(m) = vendor_mount.as_deref() {
+        argv.extend(["-v", m, "-e", "VENDOR_DIR=/vendor"]);
+    }
+    argv.extend([
         "-e",
         "PKG_DIR=/pkg",
         "-e",
         "OUT_DIR=/out",
         image_tag,
-    ];
+    ]);
 
     if let Err(note) = crate::docker::run_docker(
         &argv,
-        crate::docker::docker_timeout_from_env(),
+        crate::docker::effective_docker_timeout(),
         Some(&container_name),
     ) {
         return error_result(name, &note);
