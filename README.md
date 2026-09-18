@@ -28,6 +28,8 @@ Out of scope: VCS/CI/build-system compromise (not detectable by a package scanne
                                               at this recall floor.
     Coverage  Dynamic-layer reach    [PART]   v21: L2 reaches 26 of 27 (was 10);
                                               arm C 14/14 vectors (B3 closed).
+    F1 & prec Arm D benign control    [PART]   v22: FIRST F1 — 0.8455 any-finding,
+                                              0.7711 BLOCK-only (matched arm G).
 
 All in-scope attack vectors (A1–E1, incl. D1–D3) are implemented and live-verified.
 
@@ -834,6 +836,33 @@ and safety notes in eval/README.md; results and a ranked fix list in eval/REPORT
     accused by the intermediate network-only gate and cleared by the final one
     (preserved at eval/runs/v21netgate-armF); bcrypt gained a C3 finding but was
     already accused via B3.
+
+  ── v22 ARM D BENIGN CONTROL (2026-09-18) — the first precision and F1 ──
+  Arm D could produce a recall figure and nothing else. It now has two controls,
+  because the 499-sample corpus holds two populations. Snapshot: eval/baseline/v22/.
+
+      arm  control                              recall   FPR     prec    F1
+      ---  -----------------------------------  ------   -----   -----   ------
+      G    MATCHED: 100 compromised libraries    93.0%   32.5%   77.5%   0.8455
+           vs 83 of their OWN clean                                      (any)
+           predecessors                          64.0%    2.4%   97.0%   0.7711
+                                                                         (BLOCK)
+      H    BROAD: 399 purpose-built fakes vs     86.2%   26.2%   72.6%   0.7881
+           500 top-downloads names               27.8%    2.6%   89.5%   0.4245
+
+    Arm G is the defensible headline — and it is BELOW OSCAR's F1 0.95 (npm).
+    BLOCK is the trustworthy operating point: 97.0% precision, 2 false positives
+    across 83 clean libraries.
+
+    THREE CAVEATS, all of which cut against the tool:
+    1. Arm G's any-finding FPR (32.5%) is HIGHER than arm F's (25.9%). A matched
+       control — real libraries of the same shape — is harder than popular
+       packages. obfuscation is 24 of the 27 FPs.
+    2. Arm H is biased in the tool's favour by construction, and its precision is
+       a RANGE not a point: the establishment guard fires on 19 benign records and
+       cannot fire on the malicious half, so FPR 26.2% -> worst case 30.0% and
+       precision 72.6% -> 69.8%. Arm G is clean on this axis (guard fires on zero).
+    3. NEVER merge arms G and H. Different populations, different questions.
 
   ── v18 FIX PASS (2026-08-04) — items 0,1,2,3,5,6 done; 4,7,8,9,10 open ──
   Arms A, B, C, F re-run against eval/baseline/v17/; new snapshot in eval/baseline/v18/.

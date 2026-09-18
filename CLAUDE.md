@@ -1,5 +1,5 @@
 # CLAUDE.md
-> Last updated: 2026-09-15 (v21)
+> Last updated: 2026-09-18 (v22)
 
 ---
 
@@ -13,10 +13,31 @@ Layer 1  [████████████████████] DONE   S
 Layer 2  [████████████████████] DONE   Dynamic — baseline-subtraction diff, live Docker verified
 Layer 3  [████████████████████] DONE   Dynamic — condition mutation, live Docker verified
 Scoring  [████████████████████] DONE   Aggregate risk score (noisy-OR, --full pipeline)
-Eval     [████████████████████] DONE   --eval batch harness + 6-arm real-corpus experiment (v17)
+Eval     [████████████████████] DONE   --eval harness; 8 arms (v22 added the arm-D benign controls)
 Precision[███████████████████░] PART   v21: BLOCK 0/27, any-finding FPR 29.6% → 25.9%.
 Coverage [███████████████████░] PART   v21: L2 reach 10→26 of 27; arm C 14/14 vectors (B3 closed).
+F1 & prec[███████████████████░] PART   v22: FIRST F1 0.8455 any / 0.7711 BLOCK (matched arm G).
 ```
+
+> ✅ **v22 — arm D finally has a benign control, and the project has its first precision and F1.**
+> Every prior section called this the single most valuable missing measurement. Two controls were
+> built, because the 499-sample corpus holds two populations:
+> **arm G (matched)** — 100 compromised libraries vs **83 of their own clean predecessors** (the
+> version published just before each compromise) — **F1 0.8455** any-finding (recall 93.0%,
+> precision 77.5%) and **0.7711** BLOCK-only (recall 64.0%, precision **96.97%**, FPR **2.41%**);
+> **arm H (broad)** — 399 purpose-built fakes vs 500 top-downloads packages — F1 0.7881 any-finding.
+>
+> ⚠ **Arm G's any-finding FPR is 32.5% — HIGHER than arm F's 25.9%.** A matched control (real
+> libraries of the same shape) is harder than popular packages, which is precisely the optimism a
+> popular-package control hides. `obfuscation` is 24 of the 27 false positives, confirming v20's
+> item 11 on 83 matched libraries instead of 27 hand-picked parents.
+>
+> ⚠ **Arm H is biased in the tool's favour and its precision is bounded, not exact.** The
+> establishment guard fires on 19 benign records and cannot fire on the malicious half (no registry
+> document), so FPR 26.2% → worst case **30.0%**, precision 72.6% → **69.8%**. Arm G is clean on
+> this axis — the guard fires on **zero** of its records, which was checked before quoting it.
+>
+> **Below OSCAR's F1 0.95, and said plainly.** Never merge arms G and H.
 
 > ✅ **v21 coverage pass — items 7, 8 and 9 closed; the dynamic layers roughly doubled their reach.**
 > Layer 2 now runs on **26 of 27** legitimate packages (was 10) and Layer 3 on 25, with `dyn_valid`
@@ -155,6 +176,37 @@ based on Ladisa et al. taxonomy (IEEE S&P 2023, 107 vectors).
 ---
 
 ## Change Log
+
+### v22: Arm D benign control — the project's first precision and F1 (2026-09-18)
+
+Closes the measurement every prior section named as the most valuable one missing. Write-up:
+`eval/REPORT.md` section "v22". Baselines: `eval/baseline/v22/`.
+
+- **Two controls, because the corpus holds two populations, and they are never merged.**
+  The 499 samples split into 100 `compromised_lib` (real libraries with an injected payload) and
+  399 `malicious_intent` (published to be malicious, no legitimate twin).
+- **Arm G — matched.** For each compromised library, the version published immediately *before* the
+  compromise, pulled from the live registry: same package, same author, same style, differing only
+  by the payload. 94 of 100 had a recoverable predecessor → **83 distinct `package@version`** rows
+  (several packages were compromised across two consecutive versions). Result: **F1 0.8455**
+  any-finding (TP 93 / FP 27 / FN 7 / TN 56; recall 93.0%, precision 77.5%) and **F1 0.7711**
+  BLOCK-only (TP 64 / FP 2; recall 64.0%, precision **96.97%**, FPR **2.41%**).
+- **Arm H — broad.** 399 fakes vs 500 top-downloads names. F1 0.7881 any-finding (recall 86.2%,
+  precision 72.6%), 0.4245 BLOCK-only.
+- **New corpus group `benign_control`** so these can never blend into `parent_benign`'s rollups,
+  plus four manifests: `datadog_compromised`, `datadog_clean`, `datadog_intent`, `top_benign`.
+  A test asserts the compromised/intent split partitions `datadog_static.tsv` exactly, and another
+  asserts every control row is benign, expects no vector, and is scored at layer 1 only.
+
+⚠ **Three things to carry forward, all uncomfortable:**
+1. **Arm G's any-finding FPR is 32.5%, higher than arm F's 25.9%.** A matched control is harder
+   than popular packages — the optimism a popular-package control hides, now quantified.
+   `obfuscation` is 24 of the 27 FPs, confirming v20's item 11 on 83 matched libraries.
+2. **Arm H's precision is a range, not a point.** The establishment guard fires on 19 benign
+   records and cannot fire on the malicious half (no registry document): FPR 26.2% → worst case
+   **30.0%**, precision 72.6% → **69.8%**. Arm G is clean — the guard fires on **zero** of its
+   records, verified before the figure was quoted.
+3. **Below OSCAR's F1 0.95.** Stated plainly, not framed away.
 
 ### v21: Coverage pass — items 7, 8, 9; L2 reach 10→26 of 27, arm F FPR 29.6% → 25.9% (2026-09-15)
 
@@ -1129,13 +1181,24 @@ Agent-facing notes on reading those numbers:
   Arms D and E were NOT re-run in v18, so their v17 numbers still stand and item 3's effect on
   real-malware recall is unmeasured.
 
-Comparison context: OSCAR reports F1 0.95 (npm) on a real benchmark. Arm D's Layer-1-only F1 is 0.94
-on 499 real malicious packages — but **that arm has no benign control**, so it cannot produce a
-precision figure at all, and arm F still shows a **29.6% any-finding FPR** on legitimate packages
-after v20 (arm B: 30.0% on its mixed 30-entry benign set). So **no headline F1 should be claimed
-until arm D has a benign control.** The BLOCK-level story is clean (0.0% FPR on both benign arms
-since v18), but an F1 computed over any-finding verdicts is still dominated by SUSPECT-level noise.
-This is the single most valuable missing measurement in the project.
+Comparison context: OSCAR reports F1 0.95 (npm) on a real benchmark. **As of v22 this project can
+finally answer in kind** — arm D's benign control was the single most valuable missing measurement
+and it now exists, in two forms because the corpus holds two populations:
+
+- **Arm G (matched)** — 100 compromised libraries vs **83 of their own clean predecessors**, the
+  version published immediately before each compromise. **F1 0.8455** any-finding (recall 93.0%,
+  precision 77.5%) and **0.7711** BLOCK-only (recall 64.0%, precision **96.97%**, FPR **2.41%**).
+  This is the defensible headline, and it is **below OSCAR's 0.95** — say so plainly.
+- **Arm H (broad)** — 399 purpose-built fakes vs 500 top-downloads packages. F1 0.7881 any-finding.
+  **Biased in the tool's favour by construction** (popular packages vs obscure fakes) and its
+  precision is optimistic by a bounded amount: the establishment guard fires on 19 benign records
+  and cannot fire on the malicious half, so FPR 26.2% → worst case **30.0%**, precision 72.6% →
+  **69.8%**. Quote the range.
+
+**Never merge the two arms.** Two populations, two questions, and one carries a known asymmetry.
+The most uncomfortable number is arm G's **32.5% any-finding FPR on matched clean libraries** —
+*higher* than arm F's 25.9% on popular parents, which is exactly the optimism a popular-package
+control hides. BLOCK-level remains the trustworthy operating point everywhere.
 
 ---
 

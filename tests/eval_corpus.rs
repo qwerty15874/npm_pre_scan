@@ -122,9 +122,64 @@ fn all_checked_in_manifests_parse() {
         "parent_benign.tsv",
         "datadog_static.tsv",
         "datadog_dynamic.tsv",
+        // v22 benign-control corpora for the DataDog arms.
+        "datadog_compromised.tsv",
+        "datadog_clean.tsv",
+        "datadog_intent.tsv",
+        "top_benign.tsv",
     ] {
         let entries = manifest(name);
         assert!(!entries.is_empty(), "{} parsed to zero entries", name);
+    }
+}
+
+/// The compromised/intent split must partition `datadog_static.tsv` exactly —
+/// no entry invented, none dropped. Splitting a scored corpus by hand is how a
+/// denominator silently changes.
+#[test]
+fn the_datadog_split_partitions_the_original_corpus() {
+    let whole = manifest("datadog_static.tsv");
+    let comp = manifest("datadog_compromised.tsv");
+    let intent = manifest("datadog_intent.tsv");
+    assert_eq!(
+        comp.len() + intent.len(),
+        whole.len(),
+        "split must cover every entry exactly once"
+    );
+    let ids = |v: &[CorpusEntry]| -> std::collections::BTreeSet<String> {
+        v.iter().map(|e| e.entry_id()).collect()
+    };
+    let mut union = ids(&comp);
+    union.extend(ids(&intent));
+    assert_eq!(union, ids(&whole), "split must contain the same entry ids");
+}
+
+/// Every benign control must actually be labelled benign and carry no expected
+/// vector — a control that claims a detection is not a control.
+#[test]
+fn the_benign_controls_are_benign_and_claim_nothing() {
+    for name in ["datadog_clean.tsv", "top_benign.tsv"] {
+        let entries = manifest(name);
+        assert!(
+            entries.iter().all(|e| e.label == Label::Benign),
+            "{} must be entirely benign",
+            name
+        );
+        assert!(
+            entries.iter().all(|e| e.group == Group::BenignControl),
+            "{} must carry group=benign_control so it cannot blend with parent_benign",
+            name
+        );
+        assert!(
+            entries.iter().all(|e| e.vectors.is_empty()),
+            "{}: every flag here is a false positive, so no entry may expect a vector",
+            name
+        );
+        assert!(
+            entries.iter().all(|e| e.layers == vec![1]),
+            "{} must be scored at layer 1 only, matching its malicious counterpart",
+            name
+        );
     }
 }
 

@@ -1,0 +1,369 @@
+{
+  "provenance": {
+    "tool_version": "0.1.0",
+    "started_at": "2026-09-18T08:49:37.737451292+00:00",
+    "finished_at": "2026-09-18T08:52:49.374655577+00:00",
+    "eval_mode": "registry",
+    "manifests": [
+      "eval/corpus/datadog_intent.tsv",
+      "eval/corpus/top_benign.tsv"
+    ],
+    "entry_count": 899,
+    "docker_version": null,
+    "ptrace_probe": "not_probed",
+    "docker_timeout_secs": null,
+    "top_list_refreshed": false,
+    "top_packages_len": 1142,
+    "top_scoped_len": 94,
+    "host_os": "linux"
+  },
+  "record_count": 899,
+  "outcomes": {
+    "scanned": 896,
+    "skipped_missing": 0,
+    "registry_not_found": 3,
+    "registry_failed": 0,
+    "timeout": 0
+  },
+  "overall": {
+    "true_positive": 344,
+    "false_positive": 130,
+    "true_negative": 367,
+    "false_negative": 55,
+    "artifact_fn": 0,
+    "error": 3,
+    "skipped": 0
+  },
+  "overall_rates": {
+    "scored": 896,
+    "recall": 0.8621553884711779,
+    "precision": 0.7257383966244726,
+    "fpr": 0.26156941649899396,
+    "f1": 0.7880870561282932,
+    "accuracy": 0.7935267857142857
+  },
+  "overall_block_only": {
+    "true_positive": 111,
+    "false_positive": 13,
+    "true_negative": 484,
+    "false_negative": 288,
+    "artifact_fn": 0,
+    "error": 3,
+    "skipped": 0
+  },
+  "overall_block_only_rates": {
+    "scored": 896,
+    "recall": 0.2781954887218045,
+    "precision": 0.8951612903225806,
+    "fpr": 0.026156941649899398,
+    "f1": 0.42447418738049714,
+    "accuracy": 0.6640625
+  },
+  "by_group": [
+    {
+      "group": "datadog",
+      "confusion": {
+        "true_positive": 344,
+        "false_positive": 0,
+        "true_negative": 0,
+        "false_negative": 55,
+        "artifact_fn": 0,
+        "error": 0,
+        "skipped": 0
+      },
+      "rates": {
+        "scored": 399,
+        "recall": 0.8621553884711779,
+        "precision": 1.0,
+        "fpr": null,
+        "f1": 0.9259757738896366,
+        "accuracy": 0.8621553884711779
+      }
+    },
+    {
+      "group": "benign_control",
+      "confusion": {
+        "true_positive": 0,
+        "false_positive": 130,
+        "true_negative": 367,
+        "false_negative": 0,
+        "artifact_fn": 0,
+        "error": 3,
+        "skipped": 0
+      },
+      "rates": {
+        "scored": 497,
+        "recall": null,
+        "precision": 0.0,
+        "fpr": 0.26156941649899396,
+        "f1": null,
+        "accuracy": 0.738430583501006
+      }
+    }
+  ],
+  "by_layer": [
+    {
+      "layer": 0,
+      "ran": 0,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 899,
+      "block": 0,
+      "suspect": 0,
+      "pass": 0,
+      "finding_count": 0,
+      "sole_detector": 0,
+      "false_hits": 0,
+      "ms_p50": 0,
+      "ms_p90": 0,
+      "ms_max": 0,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 1,
+      "ran": 896,
+      "error": 3,
+      "not_run": 0,
+      "skipped": 0,
+      "block": 124,
+      "suspect": 350,
+      "pass": 422,
+      "finding_count": 5119,
+      "sole_detector": 344,
+      "false_hits": 130,
+      "ms_p50": 82,
+      "ms_p90": 265,
+      "ms_max": 10846,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 2,
+      "ran": 0,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 899,
+      "block": 0,
+      "suspect": 0,
+      "pass": 0,
+      "finding_count": 0,
+      "sole_detector": 0,
+      "false_hits": 0,
+      "ms_p50": 0,
+      "ms_p90": 0,
+      "ms_max": 0,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 3,
+      "ran": 0,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 899,
+      "block": 0,
+      "suspect": 0,
+      "pass": 0,
+      "finding_count": 0,
+      "sole_detector": 0,
+      "false_hits": 0,
+      "ms_p50": 0,
+      "ms_p90": 0,
+      "ms_max": 0,
+      "excluded_not_dyn_valid": 0
+    }
+  ],
+  "by_vector": [
+    {
+      "vector": "A1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "A2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "A3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "A4",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "META",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "B1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 9,
+      "total_fires": 243
+    },
+    {
+      "vector": "B2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 107,
+      "total_fires": 317
+    },
+    {
+      "vector": "B3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 37,
+      "total_fires": 37
+    },
+    {
+      "vector": "B4",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "C1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "C2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "C3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "E1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 17,
+      "total_fires": 114
+    }
+  ],
+  "timing": {
+    "total_ms": 204258,
+    "p50": 167,
+    "p90": 484,
+    "p99": 1615,
+    "max": 14209,
+    "slowest": [
+      [
+        "azure",
+        14209
+      ],
+      [
+        "next",
+        9934
+      ],
+      [
+        "@alifd/next",
+        3142
+      ],
+      [
+        "aws-sdk",
+        2719
+      ],
+      [
+        "firebase",
+        2348
+      ],
+      [
+        "typeorm",
+        2154
+      ],
+      [
+        "antd",
+        1980
+      ],
+      [
+        "prisma",
+        1856
+      ],
+      [
+        "styled-components",
+        1715
+      ],
+      [
+        "npm",
+        1615
+      ]
+    ]
+  }
+}

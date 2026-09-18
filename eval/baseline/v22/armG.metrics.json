@@ -1,0 +1,369 @@
+{
+  "provenance": {
+    "tool_version": "0.1.0",
+    "started_at": "2026-09-18T08:48:34.645508040+00:00",
+    "finished_at": "2026-09-18T08:49:37.727306553+00:00",
+    "eval_mode": "registry",
+    "manifests": [
+      "eval/corpus/datadog_compromised.tsv",
+      "eval/corpus/datadog_clean.tsv"
+    ],
+    "entry_count": 183,
+    "docker_version": null,
+    "ptrace_probe": "not_probed",
+    "docker_timeout_secs": null,
+    "top_list_refreshed": false,
+    "top_packages_len": 1142,
+    "top_scoped_len": 94,
+    "host_os": "linux"
+  },
+  "record_count": 183,
+  "outcomes": {
+    "scanned": 183,
+    "skipped_missing": 0,
+    "registry_not_found": 0,
+    "registry_failed": 0,
+    "timeout": 0
+  },
+  "overall": {
+    "true_positive": 93,
+    "false_positive": 27,
+    "true_negative": 56,
+    "false_negative": 7,
+    "artifact_fn": 0,
+    "error": 0,
+    "skipped": 0
+  },
+  "overall_rates": {
+    "scored": 183,
+    "recall": 0.93,
+    "precision": 0.775,
+    "fpr": 0.3253012048192771,
+    "f1": 0.8454545454545456,
+    "accuracy": 0.8142076502732241
+  },
+  "overall_block_only": {
+    "true_positive": 64,
+    "false_positive": 2,
+    "true_negative": 81,
+    "false_negative": 36,
+    "artifact_fn": 0,
+    "error": 0,
+    "skipped": 0
+  },
+  "overall_block_only_rates": {
+    "scored": 183,
+    "recall": 0.64,
+    "precision": 0.9696969696969697,
+    "fpr": 0.024096385542168676,
+    "f1": 0.7710843373493975,
+    "accuracy": 0.7923497267759563
+  },
+  "by_group": [
+    {
+      "group": "datadog",
+      "confusion": {
+        "true_positive": 93,
+        "false_positive": 0,
+        "true_negative": 0,
+        "false_negative": 7,
+        "artifact_fn": 0,
+        "error": 0,
+        "skipped": 0
+      },
+      "rates": {
+        "scored": 100,
+        "recall": 0.93,
+        "precision": 1.0,
+        "fpr": null,
+        "f1": 0.9637305699481865,
+        "accuracy": 0.93
+      }
+    },
+    {
+      "group": "benign_control",
+      "confusion": {
+        "true_positive": 0,
+        "false_positive": 27,
+        "true_negative": 56,
+        "false_negative": 0,
+        "artifact_fn": 0,
+        "error": 0,
+        "skipped": 0
+      },
+      "rates": {
+        "scored": 83,
+        "recall": null,
+        "precision": 0.0,
+        "fpr": 0.3253012048192771,
+        "f1": null,
+        "accuracy": 0.6746987951807228
+      }
+    }
+  ],
+  "by_layer": [
+    {
+      "layer": 0,
+      "ran": 0,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 183,
+      "block": 0,
+      "suspect": 0,
+      "pass": 0,
+      "finding_count": 0,
+      "sole_detector": 0,
+      "false_hits": 0,
+      "ms_p50": 0,
+      "ms_p90": 0,
+      "ms_max": 0,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 1,
+      "ran": 183,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 0,
+      "block": 66,
+      "suspect": 54,
+      "pass": 63,
+      "finding_count": 1215,
+      "sole_detector": 93,
+      "false_hits": 27,
+      "ms_p50": 12,
+      "ms_p90": 43,
+      "ms_max": 75,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 2,
+      "ran": 0,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 183,
+      "block": 0,
+      "suspect": 0,
+      "pass": 0,
+      "finding_count": 0,
+      "sole_detector": 0,
+      "false_hits": 0,
+      "ms_p50": 0,
+      "ms_p90": 0,
+      "ms_max": 0,
+      "excluded_not_dyn_valid": 0
+    },
+    {
+      "layer": 3,
+      "ran": 0,
+      "error": 0,
+      "not_run": 0,
+      "skipped": 183,
+      "block": 0,
+      "suspect": 0,
+      "pass": 0,
+      "finding_count": 0,
+      "sole_detector": 0,
+      "false_hits": 0,
+      "ms_p50": 0,
+      "ms_p90": 0,
+      "ms_max": 0,
+      "excluded_not_dyn_valid": 0
+    }
+  ],
+  "by_vector": [
+    {
+      "vector": "A1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "A2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "A3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "A4",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "META",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "B1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 4,
+      "total_fires": 76
+    },
+    {
+      "vector": "B2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 25,
+      "total_fires": 114
+    },
+    {
+      "vector": "B3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "B4",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "C1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "C2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "C3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D2",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "D3",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 0,
+      "total_fires": 0
+    },
+    {
+      "vector": "E1",
+      "expected": 0,
+      "detected": 0,
+      "missed": 0,
+      "recall": null,
+      "false_hits": 9,
+      "total_fires": 83
+    }
+  ],
+  "timing": {
+    "total_ms": 66752,
+    "p50": 78,
+    "p90": 1052,
+    "p99": 1580,
+    "max": 1657,
+    "slowest": [
+      [
+        "@emilgroup/public-api-sdk-node@1.35.0",
+        1657
+      ],
+      [
+        "@mastra/laminar@1.2.2-alpha.0",
+        1609
+      ],
+      [
+        "@mastra/turbopuffer@1.0.2-alpha.0",
+        1580
+      ],
+      [
+        "@aifabrix/miso-client@4.7.1",
+        1521
+      ],
+      [
+        "@rxap/ngx-bootstrap@19.0.2-dev.3",
+        1520
+      ],
+      [
+        "@mastra/voice-google@0.12.2-alpha.0",
+        1427
+      ],
+      [
+        "@mastra/koa@1.5.13-alpha.4",
+        1408
+      ],
+      [
+        "@mastra/vectorize@1.0.2-alpha.0",
+        1342
+      ],
+      [
+        "@operato/input@9.0.34",
+        1342
+      ],
+      [
+        "@toptal/picasso-tailwind@3.0.1-alpha-MP-669-remove-default-props-dkjf3234-7db07b500.164",
+        1341
+      ]
+    ]
+  }
+}
