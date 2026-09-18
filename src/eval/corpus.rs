@@ -116,6 +116,15 @@ pub enum Group {
     Dummy,
     ParentBenign,
     Datadog,
+    /// A legitimate package carried purely as a false-positive control for the
+    /// DataDog arms, which have never had one.
+    ///
+    /// Deliberately NOT `ParentBenign`: that group means "the real package a
+    /// malicious name imitates", and blending the two would merge arm F's
+    /// denominator with arm D's control in `by_group`. The two answer different
+    /// questions and `eval/REPORT.md` requires they never be quoted as one
+    /// figure.
+    BenignControl,
 }
 
 impl Group {
@@ -125,6 +134,7 @@ impl Group {
             "dummy" => Some(Group::Dummy),
             "parent_benign" => Some(Group::ParentBenign),
             "datadog" => Some(Group::Datadog),
+            "benign_control" => Some(Group::BenignControl),
             _ => None,
         }
     }
@@ -135,6 +145,7 @@ impl Group {
             Group::Dummy => "dummy",
             Group::ParentBenign => "parent_benign",
             Group::Datadog => "datadog",
+            Group::BenignControl => "benign_control",
         }
     }
 }

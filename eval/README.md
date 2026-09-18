@@ -137,6 +137,12 @@ kind  id  group  label  vectors  layers  [note]
 at scan time (e.g. sniffing `description == "security holding package"`) is how an evaluation
 harness ends up grading itself.
 
+**The two benign controls answer different questions and must never be merged.**
+`datadog_clean.tsv` is *matched* — the same package one version earlier — so a finding on it is
+unambiguously a false positive on code the same author shipped. `top_benign.tsv` is *broad* and
+biased in the tool's favour: popular, well-maintained packages versus tiny obscure fakes. Both carry
+`group=benign_control` rather than `parent_benign`, so `by_group` keeps them out of arm F's rollup.
+
 `group` and `label` are deliberately independent axes: `dummy_benign_l3` is `dummy`/`benign`, and
 the three reclaimed 2017-campaign names are `real_malicious`/`benign`.
 
@@ -155,6 +161,10 @@ that silently shrinks corrupts the denominators.
 | `ossf_npm_names.tsv` | 216,861 | Layer 0 name-check flag rate at scale, fully offline and reproducible |
 | `datadog_static.tsv` | 499 | Layer 1 static recall on real payloads |
 | `datadog_dynamic.tsv` | 40 | Layers 1–3 on real payloads, including the Shai-Hulud and Sept-2025 incidents |
+| `datadog_compromised.tsv` | 100 | the `compromised_lib` half of `datadog_static.tsv`, split out for the matched arm |
+| `datadog_clean.tsv` | 83 | **matched benign control** — each compromised library's own clean predecessor |
+| `datadog_intent.tsv` | 399 | the `malicious_intent` half, controlled by `top_benign.tsv` instead |
+| `top_benign.tsv` | 500 | **broad benign control** — top-downloads names; read its bias warning |
 
 ### Why npm cannot supply real malicious code
 

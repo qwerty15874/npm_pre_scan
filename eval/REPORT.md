@@ -76,7 +76,12 @@ Two results run the other way and are worth stating as plainly as the problems:
 | C | The project's own dummy packages | 19 | L0/L1 + L2 + L3 | 13.2 min |
 | D | Real malicious payloads (DataDog dataset), static | 499 | L1 | 5.2 s |
 | E | Real malicious payloads, all layers | 40 | L1 + L2 + L3 | 23.0 min |
-| F | Legitimate packages through the dynamic layers — the first measured L2/L3 false-positive rate | 27 | L0–L3 | 24.0 min |
+| F | Legitimate packages through the dynamic layers — the first measured L2/L3 false-positive rate | 27 | L0–L3 | 24.0 min (37.1 at v21) |
+| G | **Matched control (v22)** — 100 compromised libraries vs 83 of their *own* clean predecessors | 183 | L1 | 63 s |
+| H | **Broad control (v22)** — 399 purpose-built fakes vs a 500-package top-downloads control | 899 | L1 | 3.2 min |
+
+Arms G and H exist because arm D could produce a recall figure and nothing else. They are the only
+arms that yield a precision or an F1, and they must never be merged — see the v22 section.
 
 Corpus construction, provenance and the safety posture for the live-malware samples are documented
 in `eval/README.md`.
@@ -503,6 +508,121 @@ essentially no new false positives, because Layers 0 and 1 had already accused n
 
 ---
 
+## v22 — arm D gets a benign control: the project's first precision and F1 (2026-09-18)
+
+Closes the item every previous section named as the most valuable missing measurement: **arm D had
+no benign control, so 499 real malicious samples could produce a recall figure and nothing else.**
+Two controls were built, because the corpus contains two populations that need different ones, and
+they are reported separately throughout. Baselines: `eval/baseline/v22/`.
+
+**Headline: on a matched control the tool reaches F1 0.8455 at any-finding and 0.7711 at
+BLOCK-only, and BLOCK-level precision is 96.97% at a 2.41% false-positive rate.** The same
+measurement shows the flip side plainly: **any-finding FPR against matched clean libraries is
+32.5%, higher than arm F's 25.9% against popular packages.** Precision measured against popular
+packages was optimistic, and now there is a number for how much.
+
+### Why two controls
+
+`datadog_static.tsv`'s 499 samples are two different things:
+
+- **100 `compromised_lib`** — real, legitimate libraries with an injected payload. For these a
+  *matched* control exists: the last version published **before** the compromise. Same package,
+  same author, same code style, differing only by the payload. 94 of the 100 had a recoverable
+  predecessor on the live registry (3 packages fully unpublished, 3 with no earlier version); they
+  collapse to **83 distinct `package@version`** rows because several packages were compromised
+  across two consecutive versions.
+- **399 `malicious_intent`** — packages published to be malicious. They have no legitimate twin at
+  all, so the only available control is a broad legitimate sample.
+
+Blending these into one figure would be meaningless, so they are two arms with two manifests and
+two runs. A new corpus group, `benign_control`, keeps them out of `parent_benign`'s rollups.
+
+### Arm G — matched: 100 compromised libraries vs 83 of their own clean predecessors
+
+| operating point | TP | FP | FN | TN | recall | FPR | precision | **F1** |
+|---|---|---|---|---|---|---|---|---|
+| any finding | 93 | 27 | 7 | 56 | **0.9300** | 0.3253 | 0.7750 | **0.8455** |
+| BLOCK only | 64 | 2 | 36 | 81 | 0.6400 | **0.0241** | **0.9697** | 0.7711 |
+
+**This is the strongest control the corpus admits**, and it says two things at once.
+
+**BLOCK is trustworthy.** 2 false positives across 83 clean libraries, 96.97% precision. A BLOCK
+verdict on a real package is worth acting on. The cost is recall: BLOCK alone catches 64 of 100.
+
+**SUSPECT is still noise-dominated, and worse than arm F suggested.** 27 of 83 clean predecessors
+collect at least one accusation — **32.5%**, against arm F's 25.9% on 27 popular parents. The
+composition is the familiar one: `obfuscation` accounts for 24 of the 27, exactly the source v20's
+item 11 measured as non-demotable at this recall floor. That conclusion now rests on 83 matched
+libraries rather than 27 hand-picked parents.
+
+**The comparison is clean.** The establishment guard (`demote_sole_network_import`) fires on
+**zero** records in this arm, so the benign half received no leniency the malicious half could not
+also receive — a real risk here, since the benign entries carry a registry document and the sample
+entries do not.
+
+### Arm H — broad: 399 purpose-built fakes vs a 500-package top-downloads control
+
+| operating point | TP | FP | FN | TN | recall | FPR | precision | F1 |
+|---|---|---|---|---|---|---|---|---|
+| any finding | 344 | 130 | 55 | 367 | 0.8622 | 0.2616 | 0.7257 | 0.7881 |
+| BLOCK only | 111 | 13 | 288 | 484 | 0.2782 | 0.0262 | 0.8952 | 0.4245 |
+
+**Read this arm with two corrections applied.**
+
+**It is biased in the tool's favour by construction.** Popular, well-maintained packages versus
+tiny, obscure, freshly-published fakes: the two populations differ in every respect except being npm
+packages. It answers "does the tool cry wolf on what people actually install?", not "can it separate
+malicious from legitimate packages of similar shape".
+
+**Its precision is optimistic by a bounded amount.** The establishment guard fired on **19 benign
+records, all of which are true negatives only because of it** — and it cannot fire on the malicious
+half, which has no registry document. Worst case, those 19 are false positives: FPR
+26.2% → **30.0%**, precision 72.6% → **69.8%**. Quote the range, not the point estimate.
+
+Three entries returned `registry_not_found` and are correctly excluded from every denominator.
+
+### Side effect: B3 finally has enough observations to judge
+
+Arm H's 500-name control gives per-check false-positive rates on a population large enough to
+matter — the previous benign corpus was 27 packages:
+
+| check | distinct legitimate packages flagged | rate |
+|---|---|---|
+| `obfuscation` | 76 | 15.2% |
+| `version_diff` (B3) | 37 | **7.4%** |
+| `computed_load` | 37 | 7.4% |
+| `network_imports` | 23 | 4.6% |
+| `worm_signature` (E1) | 17 | 3.4% |
+| `suspicious_strings` | 13 | 2.6% |
+| `install_script` | 9 | 1.8% |
+| `shell_exfil` | 6 | 1.2% |
+
+**B3 is measurably noisy.** Before v22 it had two benign observations and one dummy true positive;
+it now has **37 false positives across 500 legitimate packages** and still no real-malware true
+positive. The v21 note that "B3's precision is still unmeasured on real malware" stands, but the
+benign side is no longer unmeasured — and it is not good. `obfuscation` leading at 15.2% is
+consistent with arm G and with v20's item 11.
+
+C3 is untouched by these arms: both are Layer 1 only, and `native_addon` is a Layer 2 check.
+
+### What this establishes, and what it does not
+
+- **The project can now state a precision and an F1.** It could not before. The defensible headline
+  is arm G: **F1 0.8455 any-finding, 0.7711 BLOCK-only, on a matched control.**
+- **It is below OSCAR's reported F1 0.95 (npm).** Stated plainly rather than framed away. Arm G is
+  also a harder test than a mixed benchmark — every benign entry is a real library that was
+  compromised one version later.
+- **The two arms must never be merged.** Different populations, different questions, and one of them
+  carries a known asymmetry.
+- **Neither arm exercises Layers 0, 2 or 3.** Both are Layer 1 only, matching arm D. The dynamic
+  layers' contribution to precision is still unmeasured on real malware.
+- **83 is not 100.** Six compromised entries have no usable control, and the 83 rows cover 94
+  compromised versions, so the matched arm is not a perfect partition of the compromised half.
+- **The clean predecessors are assumed clean.** They are the version published before the known
+  compromise; nothing here proves an earlier compromise did not exist.
+
+---
+
 ## v21 — coverage pass: the three open items (2026-09-15)
 
 Queue items **7, 8 and 9** — everything v20 left open. Baselines in `eval/baseline/v21/`, with the
@@ -772,7 +892,8 @@ All figures `eval/baseline/v21base/` → `eval/baseline/v21/`.
   here; B3's sole true positive is a dummy. Neither has enough real-malware observations to
   calibrate against.
 - **No F1 should be claimed.** Arm D still has no benign control — the single most valuable missing
-  measurement in the project, unchanged by this pass.
+  measurement in the project, unchanged by this pass. *(Closed in v22: arm G reaches F1 0.8455
+  any-finding / 0.7711 BLOCK-only against a matched control.)*
 - **The IOC extension contributes no recall** and must not be cited as if it did.
 - **`node-ipc`'s B4 miss is untested, not fixed.**
 
@@ -1425,8 +1546,9 @@ The harness is new code, so the numbers depend on it being right. What was check
 - **Arm A's 1.6% is a flag rate, not recall.** Its ground truth is "this name has a malicious-code
   advisory", not "this name is a typosquat". Per-vector recall is only claimed for arms B and C, where
   labels were hand-verified.
-- **Arm D has no benign control**, so its 88.8% recall and F1 0.94 cannot be compared against
-  OSCAR's F1 0.95 — precision there is measured on arms B and F, and it is poor.
+- **Arm D had no benign control** at the time of this run, so its 88.8% recall and F1 0.94 could not
+  be compared against OSCAR's F1 0.95. **Superseded by v22**, which built two controls: the matched
+  arm G reaches F1 0.8455 any-finding and 0.7711 BLOCK-only — genuinely comparable, and below 0.95.
 - **The dynamic layers were measured on a minority of each corpus.** 11/27 legitimate packages are
   dependency-free but only **10 completed a valid run** (`shadowsocks` timed out in both layers);
   28/40 malicious. The offline sandbox cannot install dependencies.
@@ -1456,6 +1578,11 @@ cargo build --release
     --docker-timeout 600 --package-timeout 900 --out-dir eval/runs/armE
 ./target/release/npm-pre-scan --eval eval/corpus/parent_benign.tsv --eval-mode full \
     --docker-timeout 600 --package-timeout 900 --out-dir eval/runs/armF
+# G: matched benign control, 63 s    H: broad benign control, 3.2 min
+./target/release/npm-pre-scan --eval eval/corpus/datadog_compromised.tsv \
+    --eval eval/corpus/datadog_clean.tsv --eval-mode registry --out-dir eval/runs/armG
+./target/release/npm-pre-scan --eval eval/corpus/datadog_intent.tsv \
+    --eval eval/corpus/top_benign.tsv --eval-mode registry --out-dir eval/runs/armH
 ```
 
 ⚠ **Write each arm to a FRESH `--out-dir`.** `--eval` is repeatable so that several manifests can
